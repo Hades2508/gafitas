@@ -39,9 +39,20 @@ WORK_MAX_TURNS = 40
 
 FINISHED = "FINISHED"
 BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
+#: The agent stopped emitting tool calls and did not start again (F-15). A
+#: distinct outcome from BUDGET_EXHAUSTED because the causes and the fixes are
+#: different: exhausting the budget means the work was too big, stalling means
+#: the agent lost the ability to act -- usually because the transcript pushed
+#: the tool definitions out of the context window.
+STALLED = "STALLED"
 PROVIDER_ERROR = "PROVIDER_ERROR"
 HARNESS_INVALID = "HARNESS_INVALID"
-OUTCOMES = (FINISHED, BUDGET_EXHAUSTED, PROVIDER_ERROR, HARNESS_INVALID)
+OUTCOMES = (FINISHED, BUDGET_EXHAUSTED, STALLED, PROVIDER_ERROR, HARNESS_INVALID)
+
+#: Consecutive turns with no usable tool call before the run is declared
+#: stalled. Three is enough to tell a one-off malformed reply (which the
+#: feedback usually fixes on the next turn) from a wedged conversation.
+STALL_THRESHOLD = 3
 
 #: A call signature seen this many times is a loop, per contract §D.5.
 LOOP_THRESHOLD = 3
@@ -67,6 +78,8 @@ class LoopResult:
         "calls": 0, "input_tokens": 0, "output_tokens": 0,
         "cached_tokens": 0, "provider_seconds": 0.0,
     })
+    #: Turn at which the run was declared stalled, if it was.
+    stalled_after: int | None = None
     provider_error: dict | None = None
     harness_invalid: dict | None = None
     events: list[dict] = field(default_factory=list)
@@ -79,7 +92,7 @@ class LoopResult:
         Counting them would attribute an infrastructure fault to a model, which
         is the specific error the whole taxonomy exists to prevent.
         """
-        return self.outcome in (FINISHED, BUDGET_EXHAUSTED)
+        return self.outcome in (FINISHED, BUDGET_EXHAUSTED, STALLED)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +109,7 @@ class LoopResult:
             "elisions": self.elisions,
             "wall_seconds": round(self.wall_seconds, 3),
             "usage": dict(self.usage),
+            "stalled_after": self.stalled_after,
             "provider_error": self.provider_error,
             "harness_invalid": self.harness_invalid,
         }
@@ -163,6 +177,7 @@ def run_loop(
     max_turns: int = MAX_TURNS,
     keep_turns: int | None = None,
     elide_over_chars: int | None = None,
+    budget_chars: int = 0,
 ) -> LoopResult:
     """Drive *provider* against *ctx* until it finishes or runs out of budget."""
     if protocol_name not in ("A", "B"):
@@ -175,6 +190,7 @@ def run_loop(
         elide_over_chars=(
             ELIDE_OVER_CHARS if elide_over_chars is None else elide_over_chars
         ),
+        budget_chars=budget_chars,
     )
     schema = tools.native_schema() if protocol_name == "A" else None
     result = LoopResult(outcome=BUDGET_EXHAUSTED)
@@ -183,6 +199,7 @@ def run_loop(
     events: list[dict] = []
     started = time.perf_counter()
     last_call_was_finish = False
+    consecutive_dead = 0
 
     try:
         for turn in range(1, max_turns + 1):
@@ -198,7 +215,9 @@ def run_loop(
                 events.append({"turn": turn, "provider_error": exc.to_dict()})
                 break
 
+            before_input = result.usage["input_tokens"]
             _accumulate_usage(result.usage, raw)
+            turn_input = result.usage["input_tokens"] - before_input
             message = raw.get("message", {}) if isinstance(raw, dict) else {}
             assistant = _assistant_message(message)
 
@@ -206,11 +225,23 @@ def run_loop(
                 call = protocol.parse(protocol_name, message)
             except InvalidCall as exc:
                 result.invalid_calls += 1
+                consecutive_dead += 1
                 transcript.add_correction(assistant, exc.feedback())
-                events.append({"turn": turn, "invalid_call": exc.code, "feedback": exc.feedback()})
+                events.append({"turn": turn, "invalid_call": exc.code,
+                               "feedback": exc.feedback(),
+                               "consecutive_dead": consecutive_dead,
+                               "prompt_tokens": turn_input})
                 last_call_was_finish = False
+                if consecutive_dead >= STALL_THRESHOLD:
+                    # Asking a 29th time is not persistence, it is spending the
+                    # budget to re-observe the same fact. Stop and say so.
+                    result.outcome = STALLED
+                    result.stalled_after = turn
+                    events.append({"turn": turn, "stalled": consecutive_dead})
+                    break
                 continue
 
+            consecutive_dead = 0
             signature = _signature(call.name, call.arguments)
             signatures[signature] += 1
             used[call.name if isinstance(call.name, str) else "(no-string)"] += 1
@@ -224,7 +255,8 @@ def run_loop(
                 transcript.add(Turn(number=turn, assistant=assistant,
                                     tool_name=outcome.name, tool_payload=payload))
                 events.append({"turn": turn, "tool": outcome.name, "ok": True,
-                               "result_chars": len(payload)})
+                               "result_chars": len(payload),
+                               "prompt_tokens": turn_input})
                 if outcome.name == "finish":
                     result.outcome = FINISHED
                     break
@@ -254,7 +286,8 @@ def run_loop(
             transcript.add(Turn(number=turn, assistant=assistant, tool_name=outcome.name,
                                 tool_payload=outcome.feedback or "", is_error=True))
             events.append({"turn": turn, "tool": outcome.name, "ok": False,
-                           "code": outcome.code, "invalid_call": outcome.invalid_call})
+                           "code": outcome.code, "invalid_call": outcome.invalid_call,
+                           "prompt_tokens": turn_input})
             last_call_was_finish = outcome.name == "finish"
 
     except HarnessInvalid as exc:

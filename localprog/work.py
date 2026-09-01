@@ -38,7 +38,7 @@ from . import deps, evidence, loop, telemetry_bridge, tools, verify, workspace
 from .errors import HarnessInvalid
 from .provider import WORK_NUM_CTX, WORK_NUM_PREDICT, OllamaProvider  # noqa: F401  (re-exported for the CLI)
 from .scope import WriteScope
-from .transcript import WORK_ELIDE_OVER_CHARS, WORK_KEEP_TURNS
+from .transcript import WORK_ELIDE_OVER_CHARS, WORK_KEEP_TURNS, budget_chars
 
 SCHEMA = "GAFITAS_WORK_V1"
 
@@ -348,6 +348,7 @@ def run_ticket(
             system=system_prompt(ticket), objective=objective_text(ticket),
             protocol_name="A", max_turns=ticket.max_turns,
             keep_turns=WORK_KEEP_TURNS, elide_over_chars=WORK_ELIDE_OVER_CHARS,
+            budget_chars=budget_chars(num_ctx),
         )
 
         result.loop_outcome = outcome.outcome
@@ -363,6 +364,12 @@ def run_ticket(
         result.provider_error = outcome.provider_error
         result.harness_invalid = outcome.harness_invalid
 
+        if outcome.outcome == loop.STALLED:
+            result.notes.append(
+                f"el agente dejo de emitir llamadas en el turno {outcome.stalled_after} "
+                f"y no se recupero; la run se corto en vez de gastar el resto del "
+                f"presupuesto repitiendo el mismo fallo."
+            )
         if outcome.outcome == loop.PROVIDER_ERROR:
             result.outcome = PROVIDER_ERROR
             result.scoreable = False
