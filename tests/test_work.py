@@ -141,13 +141,16 @@ def test_an_honest_miss_is_a_fail_not_a_pass(repo, tmp_path):
         ticket(repo), "fake",
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 3"),
-            tc("finish", summary="creo que ya", status="DONE"),
+            tc("run_tests"),
+            tc("finish", summary="creo que lo he arreglado", status="BLOCKED"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
     )
     assert result.outcome == work.FAIL
-    assert result.finish_status == "DONE"  # the claim is recorded...
-    # ...and does not decide anything. I9.
+    # The agent ran the tests, saw them red, and could not claim DONE (F-29).
+    # It said BLOCKED, which is honest -- and the verdict is FAIL either way,
+    # because the acceptance suite decides, not the agent. I9.
+    assert result.finish_status == "BLOCKED"
 
 
 # ------------------------------------------------------------------ F-09
@@ -223,6 +226,7 @@ def test_removing_a_public_function_blocks(repo, tmp_path):
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old=BROKEN, new=FIXED + "\n"),
             tc("edit", path="pkg/other.py", old=OTHER_SRC, new="TRIPLE = 3\n"),
+            tc("run_tests"),
             tc("finish", summary="hecho", status="DONE"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
@@ -249,6 +253,7 @@ def test_a_blocked_agent_with_clean_evidence_is_unconfirmed_not_refused(repo, tm
         ticket(repo), "fake",
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("run_tests"),
             tc("finish", summary="no estoy seguro de haberlo resuelto", status="BLOCKED"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
@@ -266,6 +271,7 @@ def test_the_agent_report_is_not_a_conscience_signal(repo, tmp_path):
         ticket(repo), "fake",
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("run_tests"),
             tc("finish", summary="dudo", status="BLOCKED"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
@@ -282,6 +288,7 @@ def test_a_blocked_agent_whose_work_is_actually_broken_still_fails(repo, tmp_pat
         ticket(repo), "fake",
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 7"),
+            tc("run_tests"),
             tc("finish", summary="no puedo", status="BLOCKED"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
@@ -296,6 +303,7 @@ def test_a_conscience_refusal_still_beats_a_confident_agent(repo, tmp_path):
         provider_factory=scripted(
             tc("edit", path="tests/test_calc.py",
                old="assert halve(10) == 5", new="assert True"),
+            tc("run_tests"),
             tc("finish", summary="verde", status="DONE"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
@@ -340,6 +348,7 @@ def test_the_source_repository_is_never_modified(repo, tmp_path):
         ticket(repo), "fake",
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("run_tests"),
             tc("finish", summary="hecho", status="DONE"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
@@ -353,6 +362,7 @@ def test_a_pass_seals_a_patch_a_human_can_read(repo, tmp_path):
         ticket(repo), "fake",
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("run_tests"),
             tc("finish", summary="hecho", status="DONE"),
         ),
         out_dir=out, base_dir=tmp_path,
@@ -374,6 +384,7 @@ def test_a_new_file_can_be_created_inside_a_directory_scope(repo, tmp_path):
         provider_factory=scripted(
             tc("write_file", path="pkg/helper.py", content="def helper():\n    return 2\n"),
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("run_tests"),
             tc("finish", summary="hecho", status="DONE"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
@@ -387,11 +398,12 @@ def test_usage_is_accounted_for(repo, tmp_path):
         ticket(repo), "fake",
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("run_tests"),
             tc("finish", summary="hecho", status="DONE"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
     )
-    assert result.usage["calls"] == 2
+    assert result.usage["calls"] == 3
     assert result.model_class == "FAKE"
 
 

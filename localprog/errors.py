@@ -151,6 +151,8 @@ ERROR_NOTHING_CHANGED = "ERROR_NOTHING_CHANGED"
 #: ToolError and not an InvalidCall: reaching for ``npm`` is a reasonable
 #: thing for a model to try, and the refusal is a fact about this sandbox
 #: rather than a malformed call.
+#: finish(DONE) was called by an agent that never watched the tests pass.
+ERROR_NOT_VERIFIED = "ERROR_NOT_VERIFIED"
 #: replace_lines was given a line range that does not exist in the file.
 ERROR_BAD_RANGE = "ERROR_BAD_RANGE"
 ERROR_COMMAND_NOT_ALLOWED = "ERROR_COMMAND_NOT_ALLOWED"
@@ -177,6 +179,7 @@ TOOL_ERROR_CODES = frozenset({
     ERROR_FILE_EXISTS,
     ERROR_NOTHING_CHANGED,
     ERROR_BAD_RANGE,
+    ERROR_NOT_VERIFIED,
     ERROR_COMMAND_NOT_ALLOWED,
     ERROR_EMPTY_DIRECTORY,
     ERROR_TOO_MANY_ENTRIES,

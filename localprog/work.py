@@ -85,7 +85,9 @@ COMO TRABAJAR
 
 CUANDO TERMINAR
 
-  finish(status="DONE", summary=...)       cuando run_tests pase.
+  finish(status="DONE", summary=...)       SOLO tras ejecutar run_tests y
+                                           ver que pasan. Si no lo has hecho,
+                                           te lo recordare.
   finish(status="NO_CHANGE", summary=...)  si compruebas que no hay nada que hacer.
   finish(status="BLOCKED", summary=...)    si no puedes continuar; explica que te
                                            lo impide. Decirlo es correcto y util.

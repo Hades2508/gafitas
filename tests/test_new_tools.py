@@ -283,6 +283,7 @@ def test_finish_done_without_edits_is_still_refused(ctx):
 
 def test_finish_done_after_an_edit_records_the_status(ctx):
     call(ctx, "edit", path="pkg/mod.py", old="n * 2", new="n + n")
+    call(ctx, "run_tests")  # F-29: DONE requires having looked
     out = call(ctx, "finish", summary="hecho")
     assert out.ok and ctx.finish_status == "DONE"
 

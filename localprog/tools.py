@@ -44,6 +44,7 @@ from .errors import (
     ERROR_NO_MATCH,
     ERROR_NOT_IN_WRITE_SCOPE,
     ERROR_NOT_TEXT,
+    ERROR_NOT_VERIFIED,
     ERROR_NOTHING_CHANGED,
     ERROR_PATH_OUTSIDE_REPO,
     ERROR_SYNTAX,
@@ -821,6 +822,30 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
             "summary='<por que>').\n"
             "  Si no puedes continuar: finish(status='BLOCKED', summary='<que te lo impide>').",
         )
+    # F-29: DONE means "I did it and I checked", not "I did something".
+    #
+    # The dogfood agent edited grep() correctly, never called run_tests, and
+    # declared DONE on turn 12 of a 40-turn budget. It had not noticed that
+    # adding a tool argument in this repository also means declaring it in
+    # SPECS and documenting it in PARAM_DOC -- which the acceptance suite says
+    # in its first line of output. It never asked.
+    #
+    # The prompt already told it to run the tests first. Saying a thing is not
+    # enforcing it. This is not the harness deciding whether the work is good:
+    # I9 still holds and the real verdict is taken after the loop, against a
+    # suite the agent cannot influence. It is the harness declining to accept a
+    # claim of completion from an agent that never looked.
+    if normalised == "DONE" and ctx.acceptance_tests and not ctx.tests_green:
+        raise ToolError(
+            ERROR_NOT_VERIFIED,
+            "no puedes terminar con status='DONE' sin haber visto pasar los tests.\n"
+            "  Llama a run_tests() y lee el resultado.\n"
+            "  Si pasan, vuelve a llamar a finish(status='DONE').\n"
+            "  Si fallan, la salida te dice exactamente que arreglar, y todavia "
+            "te quedan turnos.\n"
+            "  Si ves que no vas a poder: finish(status='BLOCKED', summary='<que te "
+            "lo impide>').",
+        )
     ctx.finish_status = normalised
     ctx.finish_summary = summary.strip()
     return f"FINISHED[{normalised}]"
@@ -1027,7 +1052,8 @@ TOOL_DOC: dict[str, str] = {
         "como averiguas que arreglar."
     ),
     "finish": (
-        "Termina tu trabajo. status='DONE' si crees que esta completo, "
+        "Termina tu trabajo. status='DONE' SOLO despues de ejecutar run_tests y "
+        "ver que pasan, "
         "status='NO_CHANGE' si has comprobado que no hace falta ningun cambio, "
         "status='BLOCKED' si no puedes continuar (explica en summary que te lo "
         "impide). No llames a finish con DONE sin haber editado nada."

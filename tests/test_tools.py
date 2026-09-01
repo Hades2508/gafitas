@@ -245,9 +245,52 @@ def test_finish_without_changes_is_refused(ctx):
     assert not out.ok and out.code == errors.ERROR_NOTHING_CHANGED
 
 
+#: The edit that makes the frozen fixture suite green: test_divide_by_zero
+#: is the one failing test in conftest's repo, which is the whole point of
+#: that fixture. F-29 means a DONE test now has to actually fix something.
+GREEN_DIVIDE = (
+    "    if b == 0:\n"
+    "        raise ValueError('division by zero')\n"
+    "    return a / b"
+)
+
+
 def test_finish_after_a_change_is_accepted(ctx):
-    call(ctx, "edit", path="calc.py", old="def add", new="def suma")
+    """DONE is accepted once the agent has edited AND watched the suite pass.
+
+    The run_tests call is not ceremony: since F-29 an agent that never looked
+    cannot claim completion, because the dogfood agent did exactly that on turn
+    12 of a 40-turn budget.
+    """
+    call(ctx, "edit", path="calc.py", old="    return a / b", new=GREEN_DIVIDE)
+    call(ctx, "run_tests")
     out = call(ctx, "finish", summary="hecho")
+    assert out.ok and out.value == "FINISHED[DONE]"
+
+
+def test_finish_done_without_running_the_tests_is_refused(ctx):
+    """F-29 itself."""
+    call(ctx, "edit", path="calc.py", old="a + b", new="a + b + 0")
+    out = call(ctx, "finish", summary="hecho")
+    assert not out.ok and out.code == errors.ERROR_NOT_VERIFIED
+    assert "run_tests" in out.feedback
+    assert "BLOCKED" in out.feedback  # and told the honest way out
+
+
+def test_finish_done_is_refused_while_the_tests_are_red(ctx):
+    """An agent that ran the tests, saw them fail, and says DONE anyway."""
+    call(ctx, "edit", path="calc.py", old="a + b", new="a - b")
+    call(ctx, "run_tests")
+    out = call(ctx, "finish", summary="hecho")
+    assert not out.ok and out.code == errors.ERROR_NOT_VERIFIED
+
+
+def test_a_ticket_with_no_declared_tests_can_still_finish(ctx, tmp_path):
+    """The rule must not make finishing impossible where there is nothing to
+    run -- it would turn every such ticket into a forced BLOCKED."""
+    free = tools.ToolContext(root=ctx.root, write_scope=("calc.py",), acceptance_tests=())
+    call(free, "edit", path="calc.py", old="a + b", new="a + b + 0")
+    out = call(free, "finish", summary="sin tests declarados")
     assert out.ok and out.value == "FINISHED[DONE]"
 
 
