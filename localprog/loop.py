@@ -57,6 +57,16 @@ STALL_THRESHOLD = 3
 #: A call signature seen this many times is a loop, per contract §D.5.
 LOOP_THRESHOLD = 3
 
+#: Remind the agent of its remaining budget once this few turns are left, and
+#: on every turn after (F-22). Early on the number is noise; near the end it is
+#: the difference between finishing something and being cut off mid-thought.
+BUDGET_WARNING_TURNS = 8
+
+#: Identical tool output this many times in a row earns an explicit "nothing
+#: changed" note (F-23). Two is right: the second identical result is already
+#: evidence that whatever happened in between did not matter.
+REPEAT_NOTICE_AFTER = 2
+
 
 @dataclass
 class LoopResult:
@@ -80,6 +90,9 @@ class LoopResult:
     })
     #: Turn at which the run was declared stalled, if it was.
     stalled_after: int | None = None
+    #: Longest run of byte-identical tool results. A high number on a failed run
+    #: means thrashing -- the agent kept measuring instead of changing anything.
+    max_repeat: int = 0
     provider_error: dict | None = None
     harness_invalid: dict | None = None
     events: list[dict] = field(default_factory=list)
@@ -110,6 +123,7 @@ class LoopResult:
             "wall_seconds": round(self.wall_seconds, 3),
             "usage": dict(self.usage),
             "stalled_after": self.stalled_after,
+            "max_repeat": self.max_repeat,
             "provider_error": self.provider_error,
             "harness_invalid": self.harness_invalid,
         }
@@ -160,6 +174,40 @@ def _payload(value: Any) -> str:
         raise HarnessInvalid(f"tool result is not serialisable: {type(value).__name__}: {exc}") from exc
 
 
+def _budget_note(turn: int, max_turns: int) -> str:
+    """A deadline the agent can actually act on (F-22).
+
+    Said only near the end. A countdown on every turn from the first would be
+    noise the model learns to skip, and the information is worthless until it
+    starts constraining choices.
+    """
+    left = max_turns - turn
+    if left > BUDGET_WARNING_TURNS:
+        return ""
+    if left <= 0:
+        return ""
+    if left == 1:
+        return ("\n[ULTIMO TURNO. Llama a finish ahora: status='DONE' si los tests "
+                "pasan, o status='BLOCKED' explicando que falta.]")
+    return (f"\n[Te quedan {left} turnos. Si no vas a llegar, termina con "
+            f"finish(status='BLOCKED', summary=...) explicando donde te has quedado.]")
+
+
+def _repeat_note(count: int, tool_name: str) -> str:
+    """Say that nothing changed, when nothing changed (F-23).
+
+    The most useful fact in a debugging loop is that the last edit made no
+    difference to what is being measured, and it is invisible to a model
+    reading one result at a time.
+    """
+    if count < REPEAT_NOTICE_AFTER:
+        return ""
+    return (f"\n[Este resultado de {tool_name} es IDENTICO al anterior ({count} veces "
+            f"seguidas). Lo que has hecho entre medias no ha cambiado nada de lo que "
+            f"esto mide. Vuelve a leer el codigo o prueba otra cosa: repetirlo dara "
+            f"lo mismo.]")
+
+
 def _signature(name: str, arguments: Any) -> str:
     try:
         return name + "|" + json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
@@ -178,6 +226,7 @@ def run_loop(
     keep_turns: int | None = None,
     elide_over_chars: int | None = None,
     budget_chars: int = 0,
+    declare_tools: tuple[str, ...] | None = None,
 ) -> LoopResult:
     """Drive *provider* against *ctx* until it finishes or runs out of budget."""
     if protocol_name not in ("A", "B"):
@@ -192,7 +241,7 @@ def run_loop(
         ),
         budget_chars=budget_chars,
     )
-    schema = tools.native_schema() if protocol_name == "A" else None
+    schema = tools.native_schema(declare_tools) if protocol_name == "A" else None
     result = LoopResult(outcome=BUDGET_EXHAUSTED)
     used: Counter = Counter()
     signatures: Counter = Counter()
@@ -200,6 +249,8 @@ def run_loop(
     started = time.perf_counter()
     last_call_was_finish = False
     consecutive_dead = 0
+    last_payload: tuple[str, str] | None = None
+    repeat_count = 0
 
     try:
         for turn in range(1, max_turns + 1):
@@ -252,10 +303,21 @@ def run_loop(
                 payload = _payload(outcome.value)
                 if outcome.feedback:
                     payload = payload + "\n" + outcome.feedback
+
+                # F-23: identical output twice running means the work in between
+                # did not touch what this measures. Say so.
+                key = (outcome.name, payload)
+                repeat_count = repeat_count + 1 if key == last_payload else 1
+                last_payload = key
+                annotated = payload + _repeat_note(repeat_count, outcome.name)
+                # F-22: and how much budget is left to act on it.
+                annotated += _budget_note(turn, max_turns)
+
                 transcript.add(Turn(number=turn, assistant=assistant,
-                                    tool_name=outcome.name, tool_payload=payload))
+                                    tool_name=outcome.name, tool_payload=annotated))
                 events.append({"turn": turn, "tool": outcome.name, "ok": True,
                                "result_chars": len(payload),
+                               "repeat_count": repeat_count,
                                "prompt_tokens": turn_input})
                 if outcome.name == "finish":
                     result.outcome = FINISHED
@@ -283,8 +345,11 @@ def run_loop(
                 events.append({"turn": turn, "tool": "finish", "ok": True, "no_changes": True})
                 break
 
-            transcript.add(Turn(number=turn, assistant=assistant, tool_name=outcome.name,
-                                tool_payload=outcome.feedback or "", is_error=True))
+            transcript.add(Turn(
+                number=turn, assistant=assistant, tool_name=outcome.name,
+                tool_payload=(outcome.feedback or "") + _budget_note(turn, max_turns),
+                is_error=True,
+            ))
             events.append({"turn": turn, "tool": outcome.name, "ok": False,
                            "code": outcome.code, "invalid_call": outcome.invalid_call,
                            "prompt_tokens": turn_input})
@@ -298,6 +363,7 @@ def run_loop(
     result.wall_seconds = time.perf_counter() - started
     result.tools_used = dict(used)
     result.loops = sum(1 for count in signatures.values() if count >= LOOP_THRESHOLD)
+    result.max_repeat = repeat_count
     result.changed_files = sorted(ctx.changed_files)
     result.tests_green = ctx.tests_green
     result.elisions = max(result.elisions, transcript.elisions)

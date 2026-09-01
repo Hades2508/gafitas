@@ -160,7 +160,7 @@ def cmd_work(args) -> int:
     finally:
         telemetry.close()
 
-    passed = [r for r in records if r.outcome == work.PASS]
+    passed = [r for r in records if r.outcome in (work.PASS, work.PASS_UNCONFIRMED)]
     voided = [r for r in records if r.outcome in (work.HARNESS_INVALID, work.NON_DISCRIMINATING)]
     (out / "WORK_RESULTS.json").write_text(
         json.dumps({

@@ -261,3 +261,82 @@ def test_budget_chars_scales_with_the_context_window():
     assert abs(large - small * 4) <= 4  # integer truncation, nothing more
     # And it must leave real headroom for the schema, the prompt and the reply.
     assert small < 8192 * transcript.CHARS_PER_TOKEN
+
+
+# --------------------------------------------- frozen instruments (F-20/F-21)
+
+
+def test_the_frozen_screen_declares_exactly_the_seven_tools_its_prompt_names():
+    """A frozen instrument that changes when unrelated code changes is not
+    frozen. Adding list_dir and run must not silently alter what SCREEN_V0
+    asks, or its numbers stop being comparable with the runs already sealed."""
+    from localprog import screen
+
+    declared = {t["function"]["name"] for t in tools.native_schema(screen.FROZEN_TOOLS)}
+    assert declared == set(screen.FROZEN_TOOLS)
+    assert len(declared) == 7
+    assert "list_dir" not in declared and "run" not in declared
+
+
+def test_the_screen_prompt_and_its_declared_tools_agree():
+    """The prompt is contract section D.3 verbatim. Whatever it names is what
+    must be declared -- that correspondence is the thing F-20 broke."""
+    from localprog import screen
+
+    for name in screen.FROZEN_TOOLS:
+        assert name in screen.SYSTEM_PROMPT, f"{name} declared but not in the D.3 prompt"
+
+
+def test_restricting_the_schema_does_not_restrict_dispatch(tmp_path):
+    """The screen declares seven; the harness still knows nine. A model that
+    reaches for an undeclared tool gets ERROR_UNKNOWN_TOOL -- the same answer it
+    would have received before those tools were written."""
+    from localprog import errors, screen
+
+    ctx = tools.ToolContext(root=tmp_path)
+    assert "list_dir" not in screen.FROZEN_TOOLS
+    out = tools.dispatch(ctx, "list_dir", {})
+    assert out.ok or out.code != errors.ERROR_UNKNOWN_TOOL  # dispatch still has it
+
+
+def test_asking_the_schema_for_a_tool_that_does_not_exist_is_a_harness_defect():
+    from localprog.errors import HarnessInvalid
+
+    with pytest.raises(HarnessInvalid):
+        tools.native_schema(("read_file", "teleport"))
+
+
+def test_step1_refuses_a_mission_whose_acceptance_already_passes(tmp_path):
+    """F-21. step1's own corpus was entirely non-discriminating and nothing in
+    it could tell. It can now, and it refuses instead of minting another
+    invalid number."""
+    import subprocess
+
+    from localprog import step1
+    from localprog.provider import FakeProvider
+
+    root = tmp_path / "solved"
+    (root / "pkg").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "m.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (root / "tests" / "test_m.py").write_text(
+        "from pkg.m import f\n\n\ndef test_f():\n    assert f() == 1\n", encoding="utf-8"
+    )
+    for args in (["init", "-q"], ["config", "user.email", "t@t"],
+                 ["config", "user.name", "t"], ["add", "-A"], ["commit", "-qm", "i"]):
+        subprocess.run(["git", *args], cwd=str(root), capture_output=True)
+
+    mission = step1.Mission(
+        mission_id="solved", repo=root, objective="cambia f() para que devuelva 2",
+        read_scope=("pkg/m.py",), write_scope=("pkg/m.py",),
+        acceptance_tests=("tests/test_m.py",),
+    )
+    provider = FakeProvider([tc("finish", summary="x")])
+    record = step1.run_mission(
+        mission, "fake", provider_factory=lambda _m: provider, base_dir=tmp_path
+    )
+    assert record.outcome == "NON_DISCRIMINATING"
+    assert record.discriminating is False
+    assert record.tester_pass is None
+    assert provider.calls == []

@@ -232,16 +232,75 @@ def test_removing_a_public_function_blocks(repo, tmp_path):
     assert result.outcome == work.BLOCKED_BY_CONSCIENCE
 
 
-def test_a_blocked_agent_never_produces_a_pass(repo, tmp_path):
+def test_a_blocked_agent_with_clean_evidence_is_unconfirmed_not_refused(repo, tmp_path):
+    """F-24, and the run that earned it.
+
+    ga06 built the module it was asked for, took its acceptance suite from a
+    collection error to 22 passed, broke none of the 11 tests that already
+    passed, and stayed in scope -- and was refused, because it had called
+    finish(status='BLOCKED'), unsure it had succeeded.
+
+    I9 says the harness owns the verdict and the model's claim can never create
+    a PASS. Letting the same claim destroy one puts the model back in the
+    judge's chair with the sign reversed. The claim is reported instead, and the
+    work keeps the outcome its evidence supports -- with a flag on it.
+    """
     result = work.run_ticket(
         ticket(repo), "fake",
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
-            tc("finish", summary="no entiendo el objetivo", status="BLOCKED"),
+            tc("finish", summary="no estoy seguro de haberlo resuelto", status="BLOCKED"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
     )
     assert result.finish_status == "BLOCKED"
+    assert result.outcome == work.PASS_UNCONFIRMED
+    assert result.agent_report["data"]["finish_status"] == "BLOCKED"
+    assert any("no lo confirmo" in n for n in result.notes)
+
+
+def test_the_agent_report_is_not_a_conscience_signal(repo, tmp_path):
+    """The boundary itself: the conscience holds deterministic evidence about
+    the CODE. What the agent believes is metadata about the run."""
+    result = work.run_ticket(
+        ticket(repo), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("finish", summary="dudo", status="BLOCKED"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    names = {s["name"] for s in result.conscience["signals"]}
+    assert "agent_not_blocked" not in names
+    assert result.conscience["verdict"] == verify.PASS
+
+
+def test_a_blocked_agent_whose_work_is_actually_broken_still_fails(repo, tmp_path):
+    """PASS_UNCONFIRMED must not become a way through for work that is wrong.
+    The evidence still decides; the flag only records the agent's doubt."""
+    result = work.run_ticket(
+        ticket(repo), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 7"),
+            tc("finish", summary="no puedo", status="BLOCKED"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert result.outcome == work.FAIL
+
+
+def test_a_conscience_refusal_still_beats_a_confident_agent(repo, tmp_path):
+    """And the other direction: DONE does not buy anything either."""
+    result = work.run_ticket(
+        ticket(repo, write_scope=("pkg/", "tests/")), "fake",
+        provider_factory=scripted(
+            tc("edit", path="tests/test_calc.py",
+               old="assert halve(10) == 5", new="assert True"),
+            tc("finish", summary="verde", status="DONE"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert result.finish_status == "DONE"
     assert result.outcome == work.BLOCKED_BY_CONSCIENCE
 
 

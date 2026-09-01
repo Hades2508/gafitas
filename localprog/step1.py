@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import evidence, loop, telemetry_bridge, tools, workspace
+from . import evidence, loop, telemetry_bridge, tools, verify, workspace
 from .errors import HarnessInvalid
 from .provider import OllamaProvider
 from .screen import PROTOCOL_B_SUFFIX, SYSTEM_PROMPT
@@ -97,6 +97,11 @@ class MissionRecord:
     outcome: str = ""
     scoreable: bool = False
     tester_pass: bool | None = None
+    #: F-21. Whether the mission's acceptance actually failed before the model
+    #: touched anything. False means the mission cannot tell success apart from
+    #: doing nothing, and tester_pass is meaningless -- which is exactly the
+    #: state all five missions of the original corpus were in.
+    discriminating: bool | None = None
     turns_used: int = 0
     invalid_calls: int = 0
     tool_errors: int = 0
@@ -119,6 +124,7 @@ class MissionRecord:
             "mission_id": self.mission_id, "model": self.model, "protocol": self.protocol,
             "outcome": self.outcome, "scoreable": self.scoreable,
             "tester_pass": self.tester_pass,
+            "discriminating": self.discriminating,
             "turns_used": self.turns_used, "invalid_calls": self.invalid_calls,
             "tool_errors": self.tool_errors, "loops": self.loops,
             "tools_used": self.tools_used, "changed_files": self.changed_files,
@@ -175,6 +181,26 @@ def run_mission(
         )
         watched = set(mission.writable) | set(mission.read_scope)
         before = evidence.capture_before(box.path, watched)
+
+        # F-21: the same gate work.py applies. This module's own corpus was
+        # entirely non-discriminating -- every repo was snapshotted solved --
+        # and nothing here could tell. It can now, and it refuses rather than
+        # minting another invalid number. Use `localprog work` for real tasks;
+        # this entrypoint is kept to reproduce historical evidence.
+        pre = verify.check_pre(box.path, mission.acceptance_tests)
+        record.discriminating = pre.measurable
+        if not pre.measurable:
+            record.outcome = "NON_DISCRIMINATING"
+            record.scoreable = False
+            record.tester_pass = None
+            record.telemetry_notes.append(pre.detail)
+            if out_dir is not None:
+                evidence.seal(
+                    out_dir / "missions",
+                    name=f"{mission.mission_id}_{model.replace('/', '_').replace(':', '_')}_{protocol}",
+                    record=record.to_dict(), events=[], diff_text="",
+                )
+            return record
 
         result = loop.run_loop(
             provider=factory(model), ctx=ctx,

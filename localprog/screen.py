@@ -36,6 +36,17 @@ from .provider import OllamaProvider
 
 SCREEN_ID = "SCREEN_V0"
 
+#: The seven tools section D.3's prompt names, and the only ones this frozen
+#: instrument declares (F-20). list_dir and run were added to the harness after
+#: this screen was recorded; declaring them here would change the question the
+#: screen asks and make its results incomparable with the runs already sealed in
+#: GATE-A-WS. dispatch still knows all nine -- a model that reaches for one of
+#: the other two gets ERROR_UNKNOWN_TOOL, exactly as it would have before they
+#: were written.
+FROZEN_TOOLS = (
+    "read_file", "grep", "list_symbols", "edit", "write_file", "run_tests", "finish",
+)
+
 # ------------------------------------------------------------- frozen §D.1
 
 CALC_PY = (
@@ -208,6 +219,7 @@ def run_once(
             provider=factory(model), ctx=ctx,
             system=system_prompt(protocol), objective=OBJECTIVE,
             protocol_name=protocol,
+        declare_tools=FROZEN_TOOLS,
         )
 
         record.outcome = result.outcome

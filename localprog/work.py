@@ -46,7 +46,11 @@ REQUIRED = ("ticket_id", "repo", "objective", "write_scope", "acceptance_tests")
 
 # Outcomes of a whole ticket. Distinct from loop outcomes: the loop reports how
 # the conversation ended, this reports what the work is worth.
-PASS = "PASS"                              # did the job, conscience clear
+PASS = "PASS"                              # did the job, conscience clear, agent confirmed
+#: Evidence is clean but the agent did not confirm -- it declared BLOCKED, or
+#: the budget ran out before it could call finish. Real, usable work with a
+#: flag on it, NOT a failure (F-24). ga06 is the case that earned this.
+PASS_UNCONFIRMED = "PASS_UNCONFIRMED"
 BLOCKED_BY_CONSCIENCE = "BLOCKED_BY_CONSCIENCE"   # suite green, a signal refused it
 FAIL = "FAIL"                              # honest miss: PRE failed, POST still fails
 NON_DISCRIMINATING = "NON_DISCRIMINATING"  # the ticket was not a task
@@ -181,10 +185,14 @@ class WorkResult:
     scoreable: bool = False
     discrimination: dict = field(default_factory=dict)
     conscience: dict = field(default_factory=dict)
+    #: The agent's own account of how it ended. Reported, never allowed to
+    #: decide anything on its own (F-24).
+    agent_report: dict = field(default_factory=dict)
     turns_used: int = 0
     invalid_calls: int = 0
     tool_errors: int = 0
     loops: int = 0
+    max_repeat: int = 0
     tools_used: dict = field(default_factory=dict)
     changed_files: list[str] = field(default_factory=list)
     unauthorised_writes: list[str] = field(default_factory=list)
@@ -212,8 +220,10 @@ class WorkResult:
             "scoreable": self.scoreable,
             "discrimination": self.discrimination,
             "conscience": self.conscience,
+            "agent_report": self.agent_report,
             "turns_used": self.turns_used, "invalid_calls": self.invalid_calls,
             "tool_errors": self.tool_errors, "loops": self.loops,
+            "max_repeat": self.max_repeat,
             "tools_used": self.tools_used,
             "changed_files": self.changed_files,
             "unauthorised_writes": self.unauthorised_writes,
@@ -356,6 +366,7 @@ def run_ticket(
         result.invalid_calls = outcome.invalid_calls
         result.tool_errors = outcome.tool_errors
         result.loops = outcome.loops
+        result.max_repeat = outcome.max_repeat
         result.tools_used = outcome.tools_used
         result.usage = dict(outcome.usage)
         result.commands_run = list(ctx.commands_run)
@@ -405,13 +416,16 @@ def run_ticket(
         result.discrimination = post_disc.to_dict()
 
         # ---------------- the conscience ----------------------------------
+        # Only deterministic evidence about the CODE goes in here. What the
+        # agent believes about its own work is reported separately (F-24).
         conscience = verify.Conscience([
             verify.signal_discrimination(post_disc),
             verify.signal_acceptance_untouched(ticket.acceptance_tests, changed),
             verify.signal_scope_respected(changed, ticket.scope),
             verify.signal_public_surface(pre_surface, post_surface),
-            verify.signal_agent_reported(ctx.finish_status, ctx.finish_summary),
         ])
+        agent_signal = verify.signal_agent_reported(ctx.finish_status, ctx.finish_summary)
+        result.agent_report = agent_signal.to_dict()
         if ticket.full_suite:
             conscience.signals.append(
                 verify.signal_no_collateral_regression(
@@ -424,15 +438,20 @@ def run_ticket(
         # I9: taken here, by the harness, after the loop. The agent's own claim
         # is one signal among several and cannot carry the decision.
         result.scoreable = True
+        confirmed = ctx.finish_status in ("DONE", "NO_CHANGE")
         if post_disc.status != verify.DISCRIMINATED:
             result.outcome = FAIL
-        elif conscience.verdict == verify.PASS:
+        elif conscience.verdict != verify.PASS:
+            result.outcome = BLOCKED_BY_CONSCIENCE
+            result.notes += [f"{s.name}: {s.detail}" for s in conscience.blocking]
+        elif confirmed:
             result.outcome = PASS
         else:
-            result.outcome = BLOCKED_BY_CONSCIENCE
-            result.notes += [
-                f"{s.name}: {s.detail}" for s in conscience.blocking
-            ]
+            result.outcome = PASS_UNCONFIRMED
+            result.notes.append(
+                f"la evidencia es limpia pero el agente no lo confirmo "
+                f"({agent_signal.detail}). El cambio sirve; conviene una lectura humana."
+            )
 
         telemetry.attempt(ticket.ticket_id, latency_ms=outcome.wall_seconds * 1000)
         telemetry.finish(ticket.ticket_id, outcome=result.outcome)
@@ -441,7 +460,7 @@ def run_ticket(
         patch = _make_patch(box.path, changed)
         result.wall_seconds = time.perf_counter() - started
         result.patch_path = _seal(out_dir, ticket, result, outcome.events, patch)
-        preserve = result.outcome != PASS
+        preserve = result.outcome not in (PASS, PASS_UNCONFIRMED)
         return result
     finally:
         box.dispose(preserve=preserve)

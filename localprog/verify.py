@@ -573,12 +573,20 @@ def signal_scope_respected(changed: set[str], scope) -> Signal:
 
 
 def signal_agent_reported(finish_status: str | None, summary: str) -> Signal:
-    """The agent's own claim. Recorded, never trusted, and able only to block.
+    """The agent's own claim about its work. NOT part of the conscience verdict.
 
-    I9 says the verdict belongs to the harness. That stays true: DONE buys
-    nothing here, it is merely not a reason to refuse. BLOCKED, though, is the
-    agent telling us it could not do the job, and an agent that says so while
-    the suite happens to be green is a situation worth stopping on.
+    F-24. This used to be folded in with the deterministic signals, and it cost
+    a real result: ga06 produced a module that took its acceptance suite from a
+    collection error to 22 passed, broke nothing, and stayed in scope -- and was
+    refused because the agent had called finish(status='BLOCKED'), unsure it had
+    succeeded. Six pieces of evidence agreeing with each other were overruled by
+    the model's confidence.
+
+    I9 says the harness owns the verdict and the model's claim can never create
+    a PASS. Letting that same claim destroy one makes the model the judge again
+    with the sign reversed. So this is computed, reported and shown to whoever
+    reads the evidence -- and ``work`` turns it into PASS_UNCONFIRMED rather
+    than a refusal.
     """
     if finish_status == "BLOCKED":
         return Signal("agent_not_blocked", INCONCLUSIVE,

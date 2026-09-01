@@ -920,8 +920,17 @@ assert set(PARAM_DOC) >= {p for req, opt in SPECS.values() for p in req + opt}, 
 )
 
 
-def native_schema() -> list[dict]:
+def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
     """The provider-side tool schema, generated from SPECS so it cannot drift.
+
+    ``only`` restricts which tools are DECLARED to the model, without touching
+    what ``dispatch`` can execute. It exists for the frozen screen (F-20):
+    that instrument's contract names seven tools, and once list_dir and run
+    were added it would otherwise have started declaring nine -- measuring
+    something other than what its own prompt describes, and producing numbers
+    that could not be compared with the runs already on disk. A tool outside
+    the declared set is an ordinary ERROR_UNKNOWN_TOOL, which is precisely how
+    it behaved before those tools existed.
 
     Both the shape and the prose come from module-level dicts that asserts tie
     to SPECS, so the schema, the argument validation and the documentation are
@@ -944,8 +953,17 @@ def native_schema() -> list[dict]:
         "summary": {"type": "string"},
         "status": {"type": "string", "enum": list(FINISH_STATUSES)},
     }
+    if only is not None:
+        unknown = [n for n in only if n not in SPECS]
+        if unknown:
+            # A caller asking for a tool that does not exist is the "schema
+            # advertised list_dir with no implementation" defect coming back in
+            # a new shape. Fail loudly rather than silently declare eight.
+            raise HarnessInvalid(f"native_schema asked for unknown tools: {unknown}")
     out = []
     for name, (required, optional) in SPECS.items():
+        if only is not None and name not in only:
+            continue
         props = {}
         for key in required + optional:
             spec = dict(types[key])
