@@ -67,6 +67,12 @@ BUDGET_WARNING_TURNS = 8
 #: evidence that whatever happened in between did not matter.
 REPEAT_NOTICE_AFTER = 2
 
+#: Turns of pure exploration before the agent is told it has not changed
+#: anything yet (F-34). qwen3.5:9b ran the same dogfood ticket twice: once it
+#: got five of six tests green, once it made 25 reads, 10 greps, 4 runs and not
+#: one edit in forty turns. The harness could see that and never said it.
+NO_EDIT_NOTICE_AFTER = 12
+
 #: Extra attempts for one provider call before the run is abandoned (F-30).
 PROVIDER_RETRIES = 2
 
@@ -208,6 +214,21 @@ def _budget_note(turn: int, max_turns: int) -> str:
             f"finish(status='BLOCKED', summary=...) explicando donde te has quedado.]")
 
 
+def _no_edit_note(turn: int, changed: int, max_turns: int) -> str:
+    """Say that nothing has been changed yet, when nothing has (F-34).
+
+    Same rule as the other two notes: state a fact about the agent's own run
+    and let it decide. Exploring is legitimate and sometimes long; exploring
+    for forty turns and finishing with an empty diff is not a plan, and by then
+    it is too late to say so.
+    """
+    if changed or turn < NO_EDIT_NOTICE_AFTER or turn >= max_turns:
+        return ""
+    return (f"\n[Llevas {turn} turnos y todavia no has cambiado nada. Explorar esta "
+            f"bien, pero el trabajo es la edicion. Si ya sabes que hay que tocar, "
+            f"hazlo ahora con edit o replace_lines.]")
+
+
 def _repeat_note(count: int, tool_name: str) -> str:
     """Say that nothing changed, when nothing changed (F-23).
 
@@ -244,7 +265,7 @@ def run_loop(
     declare_tools: tuple[str, ...] | None = None,
 ) -> LoopResult:
     """Drive *provider* against *ctx* until it finishes or runs out of budget."""
-    if protocol_name not in ("A", "B"):
+    if protocol_name not in ("A", "B", "J"):
         raise HarnessInvalid(f"unknown protocol {protocol_name!r}")
 
     transcript = Transcript(
@@ -340,6 +361,7 @@ def run_loop(
                 last_payload = key
                 annotated = payload + _repeat_note(repeat_count, outcome.name)
                 # F-22: and how much budget is left to act on it.
+                annotated += _no_edit_note(turn, len(ctx.changed_files), max_turns)
                 annotated += _budget_note(turn, max_turns)
 
                 transcript.add(Turn(number=turn, assistant=assistant,

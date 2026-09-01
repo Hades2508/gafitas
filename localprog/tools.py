@@ -1180,3 +1180,26 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
             },
         })
     return out
+
+
+def text_manual(only: tuple[str, ...] | None = None) -> str:
+    """The tool documentation as prose, for protocols with no schema channel.
+
+    Generated from SPECS, TOOL_DOC and PARAM_DOC -- the same three dicts that
+    build native_schema, tied together by the asserts above. A hand-written
+    manual for the text protocols would be a second source of truth for what a
+    tool is, and it would drift the way the old runner's schema drifted from
+    its implementation.
+    """
+    lines = ["HERRAMIENTAS DISPONIBLES", ""]
+    for name, (required, optional) in SPECS.items():
+        if only is not None and name not in only:
+            continue
+        signature = ", ".join(list(required) + [f"{o}=null" for o in optional])
+        lines.append(f"{name}({signature})")
+        lines.append(f"    {TOOL_DOC[name]}")
+        for key in required + optional:
+            flag = "" if key in required else " (opcional)"
+            lines.append(f"      - {key}{flag}: {PARAM_DOC[key]}")
+        lines.append("")
+    return "\n".join(lines)

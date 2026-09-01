@@ -188,9 +188,108 @@ def parse_native_call(message: dict) -> ParsedCall:
     return ParsedCall(name=fn["name"], arguments=fn.get("arguments"))
 
 
+#: Protocol J: one JSON object per turn, optionally inside a fenced block.
+#: For models reached through a CLI rather than a tool-calling API (F-13).
+JSON_INSTRUCTIONS = """
+COMO LLAMAR A UNA HERRAMIENTA
+
+Responde con UN solo objeto JSON, dentro de un bloque ```json, y nada mas
+despues de el. Formato exacto:
+
+```json
+{"tool": "<nombre>", "arguments": {"<arg>": <valor>}}
+```
+
+Ejemplos:
+
+```json
+{"tool": "list_dir", "arguments": {"path": "."}}
+```
+
+```json
+{"tool": "grep", "arguments": {"pattern": "def parse", "context": 3}}
+```
+
+```json
+{"tool": "edit", "arguments": {"path": "pkg/m.py", "old": "return 1", "new": "return 2"}}
+```
+
+Una sola llamada por turno. Puedes razonar antes del bloque; lo que cuenta es
+el ultimo bloque JSON de tu respuesta.
+"""
+
+
+def _json_blocks(content: str) -> list[str]:
+    """Every ```json fenced block, plus any bare {...} span, last first.
+
+    Last first because models reason and then act, so the final object is the
+    decision. Bare spans are accepted because a model that forgets the fence has
+    still communicated perfectly clearly, and refusing it would measure fence
+    discipline rather than programming.
+    """
+    blocks: list[str] = []
+    lowered = content.lower()
+    cursor = 0
+    while True:
+        start = lowered.find("```json", cursor)
+        if start == -1:
+            break
+        body = content.index("\n", start) + 1 if "\n" in content[start:] else start + 7
+        end = content.find("```", body)
+        if end == -1:
+            blocks.append(content[body:])
+            break
+        blocks.append(content[body:end])
+        cursor = end + 3
+    depth = 0
+    span_start = None
+    for i, ch in enumerate(content):
+        if ch == "{":
+            if depth == 0:
+                span_start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0 and span_start is not None:
+                blocks.append(content[span_start : i + 1])
+    return list(reversed(blocks))
+
+
+def parse_json_call(content: str) -> ParsedCall:
+    """Protocol J: ``{"tool": name, "arguments": {...}}``."""
+    if not isinstance(content, str) or not content.strip():
+        raise InvalidCall(ERROR_NO_TOOL_CALL, "respuesta vacia; llama a una herramienta.")
+    for block in _json_blocks(content):
+        try:
+            parsed = json.loads(block)
+        except ValueError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        name = parsed.get("tool") or parsed.get("name") or parsed.get("function")
+        if isinstance(name, dict):
+            name = name.get("name")
+        if not isinstance(name, str):
+            continue
+        arguments = parsed.get("arguments")
+        if arguments is None:
+            arguments = parsed.get("args")
+        if arguments is None:
+            arguments = {k: v for k, v in parsed.items()
+                         if k not in ("tool", "name", "function", "args", "arguments")}
+        return ParsedCall(name=name, arguments=arguments)
+    raise InvalidCall(
+        ERROR_FORMAT,
+        'no encontre una llamada valida. Responde con un bloque ```json que '
+        'contenga {"tool": "<nombre>", "arguments": {...}} y nada mas.',
+    )
+
+
 def parse(protocol: str, message: dict) -> ParsedCall:
     if protocol == "A":
         return parse_native_call(message)
     if protocol == "B":
         return parse_text_call(message.get("content", "") if isinstance(message, dict) else "")
+    if protocol == "J":
+        return parse_json_call(message.get("content", "") if isinstance(message, dict) else "")
     raise InvalidCall(ERROR_FORMAT, f"protocolo desconocido {protocol!r}")

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import deps, evidence, screen, step1, telemetry_bridge, work
 from .errors import HarnessInvalid
-from .provider import OllamaProvider
+from .provider import CodexProvider, OllamaProvider
 
 
 def _write_screen_report(out: Path, records, verdicts, suffix_used: bool) -> None:
@@ -139,9 +139,19 @@ def cmd_work(args) -> int:
     telemetry = telemetry_bridge.open_telemetry(
         args.run_id, Path(args.telemetry_db) if args.telemetry_db else None
     )
-    factory = lambda name: OllamaProvider(  # noqa: E731
-        name, num_ctx=args.num_ctx, num_predict=args.num_predict, timeout=args.timeout
-    )
+    # LOCAL and LUNA are reached completely differently -- one is a tool-calling
+    # HTTP endpoint, the other a CLI agent driven through a JSON text protocol --
+    # and the loop, the tools, the containment and the conscience are identical
+    # for both. That is the whole point of the tier being a provider rather than
+    # a second runner (F-13).
+    if args.tier == "LUNA":
+        factory = lambda name: CodexProvider(name, effort=args.effort, timeout=args.timeout)  # noqa: E731
+        protocol = "J"
+    else:
+        factory = lambda name: OllamaProvider(  # noqa: E731
+            name, num_ctx=args.num_ctx, num_predict=args.num_predict, timeout=args.timeout
+        )
+        protocol = "A"
     records = []
     try:
         for path in args.tickets:
@@ -151,6 +161,7 @@ def cmd_work(args) -> int:
             record = work.run_ticket(
                 ticket, args.model, provider_factory=factory,
                 out_dir=out, telemetry=telemetry, num_ctx=args.num_ctx,
+                protocol=protocol,
             )
             records.append(record)
             print(f"  {record.ticket_id:<16} {record.outcome:<24} "
@@ -248,6 +259,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--model", required=True)
     p.add_argument("--tickets", nargs="+", required=True)
+    p.add_argument("--tier", choices=("LOCAL", "LUNA"), default="LOCAL",
+                   help="LOCAL: Ollama + native tool calls. LUNA: Codex CLI + protocol J.")
+    p.add_argument("--effort", default="low", help="LUNA only: Codex reasoning effort.")
     p.add_argument("--num-ctx", type=int, default=work.WORK_NUM_CTX)
     p.add_argument("--num-predict", type=int, default=work.WORK_NUM_PREDICT)
     p.add_argument("--max-turns", type=int, default=None)

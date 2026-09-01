@@ -11,10 +11,14 @@ score.
 from __future__ import annotations
 
 import json
+import os
 import socket
+import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .errors import ProviderError
@@ -133,6 +137,109 @@ class OllamaProvider:
         if not isinstance(message, dict):
             raise ProviderError("BAD_BODY", f"sin campo 'message' utilizable: claves={sorted(parsed)}")
         return parsed
+
+
+class CodexProvider:
+    """Luna (gpt-5.6) through the Codex CLI. Protocol J only.
+
+    The escalation tier (F-13). Codex is an agent, not a chat endpoint, so it
+    cannot be handed a tool schema and cannot hold a conversation across calls.
+    Each turn therefore renders the whole transcript into one prompt and asks
+    for one JSON tool call back -- which is what protocol J exists for.
+
+    Isolation, and why it matters here more than for a local model: Codex is
+    invoked with its cwd pointed at an empty scratch directory, ``--sandbox
+    read-only`` and ``--skip-git-repo-check``. It never sees the task worktree.
+    Everything it knows arrives in the prompt this harness built, and the only
+    way it can affect anything is by naming a tool that this harness then runs
+    under the same containment as every other tier. An escalation tier that
+    could reach around the sandbox would make every safety property above it
+    conditional on which model happened to be answering.
+    """
+
+    BIN = os.environ.get("LOCALPROG_CODEX_BIN", r"D:\S5\cli\npm\codex.cmd")
+
+    def __init__(
+        self,
+        model: str = "gpt-5.6-luna",
+        *,
+        effort: str = "low",
+        timeout: float = 600.0,
+    ) -> None:
+        self.model = model
+        self.effort = effort
+        self.timeout = timeout
+        self._scratch = Path(tempfile.mkdtemp(prefix="localprog_codex_"))
+
+    def describe(self) -> dict:
+        return {
+            "provider": "codex",
+            "model_class": "LUNA",
+            "model": f"{self.model}:{self.effort}",
+            "effort": self.effort,
+            "timeout": self.timeout,
+        }
+
+    @staticmethod
+    def _render(messages: list[dict]) -> str:
+        """Flatten the transcript into one prompt.
+
+        Roles are labelled rather than dropped: without them a tool result and
+        the agent's own reasoning become the same kind of text, and the model
+        starts answering questions it already answered.
+        """
+        parts: list[str] = []
+        for message in messages:
+            role = message.get("role")
+            content = message.get("content") or ""
+            if role == "system":
+                parts.append(str(content))
+            elif role == "user":
+                parts.append(f"TAREA:\n{content}")
+            elif role == "assistant":
+                calls = message.get("tool_calls")
+                if calls:
+                    parts.append(f"TU TURNO ANTERIOR (llamada): {json.dumps(calls, ensure_ascii=False)[:2000]}")
+                elif content:
+                    parts.append(f"TU TURNO ANTERIOR: {content}")
+            elif role == "tool":
+                parts.append(f"RESULTADO DE {message.get('name')}:\n{content}")
+        parts.append("Tu turno. Responde SOLO con el bloque ```json de la siguiente llamada.")
+        return "\n\n".join(parts)
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
+        prompt = self._render(messages)
+        argv = [
+            self.BIN, "exec",
+            "-m", self.model,
+            "-c", f'model_reasoning_effort="{self.effort}"',
+            "--sandbox", "read-only",
+            "--skip-git-repo-check",
+            "-C", str(self._scratch),
+            "-",
+        ]
+        try:
+            proc = subprocess.run(
+                argv, input=prompt, capture_output=True, text=True,
+                timeout=self.timeout, shell=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise ProviderError("TIMEOUT", f"codex sin respuesta en {self.timeout:g}s") from None
+        except OSError as exc:
+            raise ProviderError("TRANSPORT", f"no se pudo ejecutar codex: {exc}") from None
+        if proc.returncode != 0:
+            raise ProviderError(
+                "HTTP_STATUS",
+                f"codex salio con {proc.returncode}: {(proc.stderr or '')[-400:]}",
+                status=proc.returncode,
+            )
+        text = proc.stdout or ""
+        if not text.strip():
+            raise ProviderError("BAD_BODY", "codex no devolvio nada")
+        # No usage numbers: the CLI does not report them. Zeros here would read
+        # as "this tier was free", which is the opposite of true, so the fields
+        # are left absent and the cost is carried by wall time and call count.
+        return {"message": {"role": "assistant", "content": text}}
 
 
 class FakeProvider:

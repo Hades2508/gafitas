@@ -34,9 +34,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import deps, evidence, loop, telemetry_bridge, tools, verify, workspace
+from . import deps, evidence, loop, protocol as protocol_mod, telemetry_bridge, tools, verify, workspace
 from .errors import HarnessInvalid
-from .provider import WORK_NUM_CTX, WORK_NUM_PREDICT, OllamaProvider  # noqa: F401  (re-exported for the CLI)
+from .provider import (  # noqa: F401  (WORK_* re-exported for the CLI)
+    WORK_NUM_CTX,
+    WORK_NUM_PREDICT,
+    CodexProvider,
+    OllamaProvider,
+)
 from .scope import WriteScope
 from .transcript import WORK_ELIDE_OVER_CHARS, WORK_KEEP_TURNS, budget_chars
 
@@ -182,6 +187,7 @@ class WorkResult:
     ticket_id: str
     model: str
     model_class: str = "LOCAL"
+    protocol: str = "A"
     outcome: str = ""
     loop_outcome: str = ""
     scoreable: bool = False
@@ -219,6 +225,7 @@ class WorkResult:
             "schema": SCHEMA,
             "ticket_id": self.ticket_id, "model": self.model,
             "model_class": self.model_class,
+            "protocol": self.protocol,
             "outcome": self.outcome, "loop_outcome": self.loop_outcome,
             "scoreable": self.scoreable,
             "discrimination": self.discrimination,
@@ -279,11 +286,21 @@ def _python_files(root: Path) -> list[str]:
     ]
 
 
-def system_prompt(ticket: Ticket) -> str:
-    return SYSTEM_PROMPT.format(
+def system_prompt(ticket: Ticket, protocol: str = "A") -> str:
+    """The system prompt, plus whatever the protocol needs to be usable.
+
+    Protocol A gets the tool schema through the provider's own channel and needs
+    nothing extra. Protocol J has no such channel, so the manual and the call
+    format travel in the prompt -- both generated from the same dicts that build
+    the schema, so the two tiers cannot disagree about what a tool is.
+    """
+    text = SYSTEM_PROMPT.format(
         write_scope=", ".join(ticket.scope.to_list()) or "(nada)",
         max_turns=ticket.max_turns,
     )
+    if protocol == "J":
+        text += "\n\n" + tools.text_manual() + "\n" + protocol_mod.JSON_INSTRUCTIONS
+    return text
 
 
 def objective_text(ticket: Ticket) -> str:
@@ -307,9 +324,10 @@ def run_ticket(
     telemetry: Any | None = None,
     base_dir: Path | None = None,
     num_ctx: int = WORK_NUM_CTX,
+    protocol: str = "A",
 ) -> WorkResult:
     """Do the ticket. One model, one workspace, one verdict."""
-    result = WorkResult(ticket_id=ticket.ticket_id, model=model)
+    result = WorkResult(ticket_id=ticket.ticket_id, model=model, protocol=protocol)
     factory = provider_factory or (
         lambda name: OllamaProvider(name, num_ctx=num_ctx, num_predict=WORK_NUM_PREDICT)
     )
@@ -359,8 +377,8 @@ def run_ticket(
 
         outcome = loop.run_loop(
             provider=provider, ctx=ctx,
-            system=system_prompt(ticket), objective=objective_text(ticket),
-            protocol_name="A", max_turns=ticket.max_turns,
+            system=system_prompt(ticket, protocol), objective=objective_text(ticket),
+            protocol_name=protocol, max_turns=ticket.max_turns,
             keep_turns=WORK_KEEP_TURNS, elide_over_chars=WORK_ELIDE_OVER_CHARS,
             budget_chars=budget_chars(num_ctx),
         )
