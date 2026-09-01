@@ -14,7 +14,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from . import deps, evidence, screen, step1, telemetry_bridge, work
+from . import deps, evidence, route, screen, step1, telemetry_bridge, work
 from .errors import HarnessInvalid
 from .provider import CodexProvider, OllamaProvider
 
@@ -144,30 +144,48 @@ def cmd_work(args) -> int:
     # and the loop, the tools, the containment and the conscience are identical
     # for both. That is the whole point of the tier being a provider rather than
     # a second runner (F-13).
+    def local_tier() -> dict:
+        return {
+            "tier": route.LOCAL, "model": args.model, "protocol": "A",
+            "provider_factory": lambda name: OllamaProvider(
+                name, num_ctx=args.num_ctx, num_predict=args.num_predict,
+                timeout=args.timeout,
+            ),
+        }
+
+    def luna_tier(model: str) -> dict:
+        return {
+            "tier": route.LUNA, "model": model, "protocol": "J",
+            "provider_factory": lambda name: CodexProvider(
+                name, effort=args.effort, timeout=max(args.timeout, 600.0)
+            ),
+        }
+
     if args.tier == "LUNA":
-        factory = lambda name: CodexProvider(name, effort=args.effort, timeout=args.timeout)  # noqa: E731
-        protocol = "J"
+        tiers = [luna_tier(args.model)]
+    elif args.tier == "AUTO":
+        tiers = [local_tier(), luna_tier(args.luna_model)]
     else:
-        factory = lambda name: OllamaProvider(  # noqa: E731
-            name, num_ctx=args.num_ctx, num_predict=args.num_predict, timeout=args.timeout
-        )
-        protocol = "A"
+        tiers = [local_tier()]
     records = []
+    routed_all = []
     try:
         for path in args.tickets:
             ticket = work.load_ticket(Path(path))
             if args.max_turns:
                 ticket = replace(ticket, max_turns=args.max_turns)
-            record = work.run_ticket(
-                ticket, args.model, provider_factory=factory,
+            routed = route.run_with_ladder(
+                ticket, tiers=tiers,
                 out_dir=out, telemetry=telemetry, num_ctx=args.num_ctx,
-                protocol=protocol,
             )
+            routed_all.append(routed)
+            record = routed.result
             records.append(record)
+            trail = " -> ".join(f"{a.tier}:{a.outcome}" for a in routed.attempts)
             print(f"  {record.ticket_id:<16} {record.outcome:<24} "
                   f"{record.turns_used:>3} turnos  "
                   f"{record.usage.get('output_tokens', 0):>6} tok_out  "
-                  f"{record.wall_seconds:>6.1f}s")
+                  f"{record.wall_seconds:>6.1f}s  [{trail}]")
     finally:
         telemetry.close()
 
@@ -176,13 +194,16 @@ def cmd_work(args) -> int:
     (out / "WORK_RESULTS.json").write_text(
         json.dumps({
             "provenance": deps.provenance(), "model": args.model,
+            "tier": args.tier,
             "passed": len(passed), "total": len(records),
             "usage_total": _sum_usage(records),
+            "routing": route.summarise(routed_all),
             "records": [r.to_dict() for r in records],
+            "ladder": [r.to_dict() for r in routed_all],
         }, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    _write_work_report(out, records)
+    _write_work_report(out, records, routed_all)
     print(f"{len(passed)}/{len(records)} PASS -> {out}")
     if any(r.outcome == work.HARNESS_INVALID for r in records):
         evidence.harness_invalid_notice(
@@ -212,7 +233,7 @@ def _sum_usage(records) -> dict:
 NL = chr(10)
 
 
-def _write_work_report(out: Path, records) -> None:
+def _write_work_report(out: Path, records, routed_all=()) -> None:
     lines = ["# GAFITAS WORK", ""]
     for r in records:
         lines.append(
@@ -223,6 +244,18 @@ def _write_work_report(out: Path, records) -> None:
             lines.append(f"  - cambiados: {', '.join(r.changed_files[:8])}")
         for note in r.notes[:4]:
             lines.append(f"  - {note}")
+    if routed_all:
+        summary = route.summarise(list(routed_all))
+        lines += ["", "## Escalado", "",
+                  f"- resueltos: **{summary['solved']}/{summary['tickets']}**",
+                  f"- resueltos sin escalar: **{summary['solved_without_escalation']}**",
+                  f"- escalados: **{summary['escalated']}**", ""]
+        for tier, bucket in summary["by_tier"].items():
+            lines.append(
+                f"  - **{tier}**: {bucket['attempts']} intentos, "
+                f"{bucket['solved']} resueltos, {bucket['calls']} llamadas, "
+                f"{bucket['output_tokens']} tok_out, {bucket['wall_seconds']:.0f}s"
+            )
     lines += ["", "## Coste por clase de modelo", ""]
     for cls, bucket in _sum_usage(records).items():
         lines.append(
@@ -259,8 +292,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--model", required=True)
     p.add_argument("--tickets", nargs="+", required=True)
-    p.add_argument("--tier", choices=("LOCAL", "LUNA"), default="LOCAL",
-                   help="LOCAL: Ollama + native tool calls. LUNA: Codex CLI + protocol J.")
+    p.add_argument("--tier", choices=("LOCAL", "LUNA", "AUTO"), default="LOCAL",
+                   help="LOCAL: Ollama + native tool calls. LUNA: Codex CLI + "
+                        "protocol J. AUTO: try LOCAL, escalate to LUNA only when "
+                        "LOCAL demonstrably failed.")
+    p.add_argument("--luna-model", default="gpt-5.6-luna",
+                   help="Model for the LUNA rung of --tier AUTO.")
     p.add_argument("--effort", default="low", help="LUNA only: Codex reasoning effort.")
     p.add_argument("--num-ctx", type=int, default=work.WORK_NUM_CTX)
     p.add_argument("--num-predict", type=int, default=work.WORK_NUM_PREDICT)
