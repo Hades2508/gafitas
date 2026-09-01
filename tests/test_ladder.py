@@ -230,5 +230,34 @@ def test_the_luna_prompt_explains_that_its_own_sandbox_is_empty():
     were its own."""
     rendered = CodexProvider._render([{"role": "user", "content": "T"}])
     assert "VACIO a proposito" in rendered
-    assert "no veras el repositorio real" in rendered
+    assert "tus propias herramientas de fichero no sirven" in rendered
     assert rendered.startswith("IMPORTANTE"), "it must be read before anything else"
+
+
+def test_the_luna_prompt_is_sent_as_utf8(monkeypatch):
+    """F-35. text=True encodes stdin with the LOCALE codec -- cp1252 here --
+    so one accented character anywhere in the repository made the whole prompt
+    invalid UTF-8 and Codex refused it. The second Luna run died that way on
+    turn 6, after five turns of correct exploration, on a byte inside a
+    Spanish docstring it had just read."""
+    captured = {}
+    reply = jcall("finish", summary="ok")["content"]
+
+    class Result:
+        returncode = 0
+        stdout = reply
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        captured.update(kwargs)
+        return Result()
+
+    import subprocess as sp
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    provider = CodexProvider("gpt-5.6-luna")
+    accented = "acentos: " + "".join(chr(c) for c in (225, 233, 237, 243, 250, 241))
+    message = provider.chat([{"role": "user", "content": accented}])
+    assert captured["encoding"] == "utf-8"
+    assert accented in captured["input"]
+    assert protocol.parse("J", message["message"]).name == "finish"

@@ -246,6 +246,13 @@ verdad. Fiate de ellos y no de lo que veas en tu propio sandbox.
         try:
             proc = subprocess.run(
                 argv, input=prompt, capture_output=True, text=True,
+                # F-35: text=True encodes stdin with the LOCALE codec, which on
+                # this machine is cp1252. A repository containing a single
+                # accented character then reaches Codex as invalid UTF-8 and it
+                # refuses the whole prompt -- which is what killed the second
+                # Luna run at turn 6, after five turns of correct exploration,
+                # on a byte inside a Spanish docstring it had just read.
+                encoding="utf-8", errors="replace",
                 timeout=self.timeout, shell=False,
             )
         except subprocess.TimeoutExpired:
