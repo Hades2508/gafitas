@@ -1,12 +1,11 @@
 # GAFITAS — CURRENT STATE
 
-Single operational state file. Updated every round. If you are coming back to
-this after a week, read only this file.
+Single operational state file. If you come back to this in a week, read only
+this. Everything else is detail.
 
-**Canonical root:** `D:\LOCAL-PROGRAMMER-ROOT` — package `localprog`.
-Everything else is either a borrowed authority or evidence.
-
-**Last updated:** round 1 complete, round 2 in progress.
+**Canonical root:** `D:\LOCAL-PROGRAMMER-ROOT`, package `localprog`.
+**Entry point:** `python -m localprog work --out <DIR> --tier AUTO --model <local> --tickets <t.json>`
+**Suite:** 313 tests, green.
 
 ---
 
@@ -14,34 +13,36 @@ Everything else is either a borrowed authority or evidence.
 
 | capability | state | evidence |
 |---|---|---|
-| ticket intake | WORKING | `work.load_ticket`, malformed ticket = HarnessInvalid, never a model failure |
-| isolated workspace | WORKING | git worktree, copy fallback, source repo provably untouched (`test_the_source_repository_is_never_modified`) |
-| containment | WORKING | `programmer.guard` on every path + import-shadow detection; escape attempts refused even with a `**` write scope |
-| **PRE/POST discrimination** | **WORKING** | model is not invoked at all on a solved ticket (`test_a_solved_ticket_is_refused_before_the_model_runs`) |
-| read / search / enumerate | WORKING | `read_file`, `grep`, `list_symbols`, `list_dir` |
-| edit | WORKING | unique-match, syntax-checked, atomic, multi-edit safe |
-| create files | WORKING | directory and glob write scopes, not an exact-path list |
-| execute + observe | WORKING | `run` — argv array, no shell, interpreter allowlist, git read-only, timeout, bounded output |
-| deliberate ending | WORKING | `finish(status=DONE\|NO_CHANGE\|BLOCKED)` |
-| refuse-only conscience | WORKING | 6 signals; proven unable to manufacture a PASS |
-| collateral regression | WORKING | whole-suite PRE/POST per-test comparison |
-| cost accounting | WORKING | per-call tokens, split by model class |
-| evidence | WORKING | sealed JSON + turn trace + readable `.patch` |
-| rollback | WORKING | the box is the rollback; preserved on failure |
-
-**Test suite: 169 green** (`python -m pytest -q` in the canonical root).
+| ticket intake | WORKING | malformed ticket = HarnessInvalid, never a model failure |
+| isolated workspace | WORKING | git worktree; source repo provably untouched |
+| containment | WORKING | `programmer.guard` + import-shadow detection; escape refused even with a `**` scope, on **both** tiers |
+| PRE/POST discrimination | WORKING | a solved ticket never reaches the model at all |
+| read / search / enumerate | WORKING | `read_file`, `grep` (with context), `list_symbols`, `list_dir` |
+| edit | WORKING | `edit` (unique match) and `replace_lines` (by line number) |
+| create files | WORKING | directory and glob write scopes |
+| execute + observe | WORKING | `run` — argv array, no shell, allowlist, git read-only, timeout |
+| debug loop | WORKING | edit → test → observe → edit, with recovery |
+| deliberate ending | WORKING | `finish(DONE\|NO_CHANGE\|BLOCKED)`; DONE requires green tests |
+| stall detection | WORKING | 3 dead turns ends the run instead of burning 30 |
+| context management | WORKING | per-payload cap, budgeted elision, no runaway |
+| refuse-only conscience | WORKING | 5 deterministic signals; provably cannot manufacture a PASS |
+| collateral regression | WORKING | whole-suite per-test PRE/POST comparison |
+| escalation ladder | WORKING | `--tier AUTO`: LOCAL, escalate to LUNA only on evidence |
+| cost accounting | WORKING | per-tier; a tier that reports no tokens says so |
+| evidence | WORKING | sealed JSON + turn trace + readable `.patch`, preserved on failure |
+| rollback | WORKING | the box is the rollback |
 
 ---
 
-## WHAT DOESN'T (open blockers)
+## WHAT DOESN'T
 
 | id | what | priority |
 |---|---|---|
-| F-13 | No model routing. LOCAL only; no LUNA, no CLAUDE escalation. | P1 |
-| F-09b | Conscience has no PRE/POST *behavioural* probes, only surface + suite. | P2 |
-| F-12 | Duplicate runners still committed in `PROGRAMMER-BUILD-ROOT`. | P2 |
-| — | No commit/handoff step; the patch is produced but not applied anywhere. | P2 |
-| F-14 | Explorer not exposed as an optional tool. Not yet demonstrated as needed. | P3 |
+| — | LUNA reports no token counts (Codex CLI limitation). Cost is calls + wall time only. | P2 |
+| — | No commit/handoff step. The patch is produced; applying it is a human decision. | P2 |
+| F-09b | Conscience has no PRE/POST *behavioural* probes, only surface + suite. Behavioral Oracle still not wired in. | P2 |
+| — | Local success rate is variable on harder classes; same model, same ticket, different outcome. | P2 |
+| F-14 | Explorer not exposed as a tool. Never demonstrated as needed. | P3 |
 
 ---
 
@@ -49,28 +50,37 @@ Everything else is either a borrowed authority or evidence.
 
 Hardware: RTX 3080 Ti, **12 GB VRAM**.
 
-| role | model | why |
+| tier | model | notes |
 |---|---|---|
-| local worker | `qwen3:4b-instruct-2507-q4_K_M` (2.5 GB) | passed the frozen screen 5/5, and is the first model to complete a real ticket end to end |
-| local alternate | `qwen3.5:4b` (3.4 GB) | also PASS_NOISY on the screen |
-| local larger | `qwen2.5-coder:7b` (4.7 GB) | screen said INCOMPATIBLE — **that verdict is void**, it was measured against an undocumented tool schema (F-02). Needs re-screening. |
-| escalation | `gpt-5.6-luna` via Codex CLI | adapter exists but is orphaned in `GATE-A-WS`; not wired in |
+| LOCAL | `qwen3:4b-instruct-2507-q4_K_M` (2.5 GB) | 32k ctx, ~7.2 GB with KV cache. Solves the routine classes. |
+| LOCAL alt | `qwen3.5:9b` (6.6 GB) | Stronger, slower. Reached 5/6 on the dogfood ticket. |
+| LUNA | `gpt-5.6-luna` via Codex CLI, protocol J | Solves what LOCAL cannot. |
+| — | `qwen2.5-coder:7b` | **Unusable.** Re-screened against the documented schema after F-02; still emits no tool call at all. The verdict now stands on its own merits. |
 
 ---
 
 ## CURRENT ROUTING
 
-None. Every ticket goes to one named local model. Routing is deliberately not
-built until there is a functioning programmer to route *for*.
+`--tier AUTO`. Three groups, and the middle one is the whole design:
+
+- **escalate** — `FAIL`, `BLOCKED_BY_CONSCIENCE`: the model tried and missed.
+- **keep** — `PASS`, `PASS_UNCONFIRMED`: usable work; a second opinion buys nothing.
+- **refuse** — `NON_DISCRIMINATING`, `PROVIDER_ERROR`, `HARNESS_INVALID`: no model can
+  fix these, and escalating them turns every corpus defect and crashed server
+  into a paid API call while hiding the cause.
 
 ---
 
 ## CURRENT COST
 
-Measured per ticket, split by model class (`WORK_RESULTS.json` → `usage_total`).
+Eight-ticket sweep, `--tier AUTO`:
 
-First real ticket (SMOKE-01, single-file fix, `qwen3:4b`):
-**6 turns · 15,688 input tokens · 668 output tokens · 17.3 s · 0 external spend.**
+| tier | attempts | solved | calls | tokens | wall |
+|---|---|---|---|---|---|
+| LOCAL | 8 | 3 | 149 | 1,070,891 in / 44,046 out | 446 s |
+| LUNA | 5 | 5 | 33 | not reported by the provider | 265 s |
+
+**8/8 solved. 3 without paying anything. Claude wrote none of it.**
 
 ---
 
@@ -78,32 +88,31 @@ First real ticket (SMOKE-01, single-file fix, `qwen3:4b`):
 
 | class | status | evidence |
 |---|---|---|
-| A small single-file change | **DEMONSTRATED** | SMOKE-01 PASS, conscience clean, trace `list_dir→read_file→grep→read_file→edit→finish` |
-| H search/trace before editing | **DEMONSTRATED** | same run — it grepped before editing |
-| C create a module from a spec | in progress | ga04/ga06/ga07/ga08, PRE-FAIL proven |
-| B multi-file change | probe ready | `mf01`, PRE 3 failed / 1 passed |
-| D bugfix needing execution | probe ready | `dbg01`, PRE 4 failed / 1 passed |
-| E modify tests | not started | |
-| F self-dogfood | not started | |
-| G recover from a failed attempt | not started | measured opportunistically |
+| A small single-file change | **DEMONSTRATED** | SMOKE-01, LOCAL |
+| B multi-file change | **DEMONSTRATED** | mf01, LOCAL, 3 files |
+| C create a module from a spec | **DEMONSTRATED** | ga04/06/07/08 |
+| D bugfix needing execution | **DEMONSTRATED** | dbg01, LOCAL |
+| E modify tests | **DEMONSTRATED** | tests01 — updated the legacy test without deleting assertions |
+| F self-dogfood | **DEMONSTRATED** | DOGFOOD-01, committed as `405b192` |
+| G recover from a failed attempt | **DEMONSTRATED** | dbg01: test fails → edit → fails → edit → green |
+| H search/trace before editing | **DEMONSTRATED** | every run begins list_dir/grep |
 
 ---
 
 ## CORPUS DISCIPLINE
 
 Every ticket carries `_discrimination_proof`. No ticket is frozen until a build
-script has personally executed PRE and watched it fail — and, where a historical
-implementation is used as the known-correct POST, watched that pass.
+script has executed PRE and watched it fail — and, where a historical
+implementation is the known-correct POST, watched that pass.
 
-The old STEP1 corpus is **void** and must not be reused: all five repos were
-snapshotted in their solved state. Its evidence is preserved, not deleted.
+The **original STEP1 corpus is void** and must not be reused: all five repos
+were snapshotted in their solved state. Its evidence is preserved, not deleted.
 
 ---
 
 ## NEXT WORK
 
-1. Finish class C (ga0x) and classes B/D.
-2. Re-screen `qwen2.5-coder:7b` against the documented schema — its
-   INCOMPATIBLE verdict was an artefact of F-02.
-3. Self-dogfood: give GAFITAS a real ticket against its own repository.
-4. Routing, once there is evidence about which classes need escalation.
+1. Wire the Behavioral Oracle in as additional conscience signals.
+2. A commit/handoff step, so a PASS can become a branch without a human copy.
+3. Reduce LOCAL variance, or accept it and let the ladder absorb it.
+4. Keep dogfooding: every further GAFITAS change should be a ticket first.
