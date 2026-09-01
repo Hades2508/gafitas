@@ -251,10 +251,15 @@ def _write_work_report(out: Path, records, routed_all=()) -> None:
                   f"- resueltos sin escalar: **{summary['solved_without_escalation']}**",
                   f"- escalados: **{summary['escalated']}**", ""]
         for tier, bucket in summary["by_tier"].items():
+            cost = (
+                f"{bucket['input_tokens']} tok_in, {bucket['output_tokens']} tok_out"
+                if bucket.get("tokens_reported", True)
+                else "tokens NO reportados por el proveedor (0 no significa gratis)"
+            )
             lines.append(
                 f"  - **{tier}**: {bucket['attempts']} intentos, "
                 f"{bucket['solved']} resueltos, {bucket['calls']} llamadas, "
-                f"{bucket['output_tokens']} tok_out, {bucket['wall_seconds']:.0f}s"
+                f"{cost}, {bucket['wall_seconds']:.0f}s"
             )
     lines += ["", "## Coste por clase de modelo", ""]
     for cls, bucket in _sum_usage(records).items():

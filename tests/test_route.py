@@ -207,3 +207,35 @@ def test_a_tier_that_failed_is_not_credited_with_the_solve(tmp_path):
     summary = route.summarise([routed])
     assert summary["by_tier"][route.LOCAL]["solved"] == 0
     assert summary["by_tier"][route.LUNA]["solved"] == 1
+
+
+def test_a_tier_that_reports_no_tokens_is_marked_not_free(tmp_path):
+    """The Codex CLI reports no token counts, so LUNA's row comes back with
+    zeros -- for the only tier that costs actual money. Zero reads as free,
+    and that is exactly the blind spot this project was told not to repeat:
+    perfect accounting for the cheap side and none for the expensive one."""
+    def runner(tkt, model, **kwargs):
+        return FakeResult(work.PASS, usage={"calls": 4})  # no token fields
+
+    routed = route.run_with_ladder(
+        ticket(tmp_path),
+        tiers=[{"tier": route.LUNA, "model": "luna", "protocol": "J"}],
+        runner=runner,
+    )
+    bucket = route.summarise([routed])["by_tier"][route.LUNA]
+    assert bucket["tokens_reported"] is False
+    assert bucket["calls"] == 4, "calls and wall time are the cost signal instead"
+
+
+def test_a_tier_that_does_report_tokens_is_marked_reported(tmp_path):
+    def runner(tkt, model, **kwargs):
+        return FakeResult(work.PASS, usage={"calls": 4, "input_tokens": 900, "output_tokens": 80})
+
+    routed = route.run_with_ladder(
+        ticket(tmp_path),
+        tiers=[{"tier": route.LOCAL, "model": "local", "protocol": "A"}],
+        runner=runner,
+    )
+    bucket = route.summarise([routed])["by_tier"][route.LOCAL]
+    assert bucket["tokens_reported"] is True
+    assert bucket["input_tokens"] == 900

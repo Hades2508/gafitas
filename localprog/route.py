@@ -176,11 +176,23 @@ def summarise(routed_list: list[Routed]) -> dict:
             bucket = by_tier.setdefault(attempt.tier, {
                 "attempts": 0, "solved": 0, "calls": 0,
                 "input_tokens": 0, "output_tokens": 0, "wall_seconds": 0.0,
+                #: Set true only once some attempt actually reports tokens.
+                #: The Codex CLI reports none, so LUNA stays false and its zeros
+                #: must not be read as free -- calls and wall time are its only
+                #: cost signal.
+                "tokens_reported": False,
             })
             bucket["attempts"] += 1
             bucket["wall_seconds"] = round(bucket["wall_seconds"] + attempt.wall_seconds, 1)
             for key in ("calls", "input_tokens", "output_tokens"):
                 bucket[key] += int(attempt.usage.get(key, 0) or 0)
+            # A tier whose provider never reports token counts must say so.
+            # Zero reads as "this tier was free", which is the opposite of true
+            # for the only tier that costs money -- and it is exactly the blind
+            # spot this project was told not to reproduce: perfect accounting
+            # for the cheap side and none for the expensive one.
+            if int(attempt.usage.get("input_tokens", 0) or 0) > 0:
+                bucket["tokens_reported"] = True
             if attempt is routed.attempts[-1] and routed.outcome in SUCCESSFUL:
                 bucket["solved"] += 1
 
