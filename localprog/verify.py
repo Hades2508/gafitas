@@ -298,6 +298,10 @@ class Symbol:
     name: str
     kind: str          # function | class
     params: tuple[str, ...]
+    #: How many of the trailing positional parameters have defaults. Needed to
+    #: tell "gained an optional argument", which breaks nothing, from "gained a
+    #: required one", which breaks every existing caller (F-36).
+    defaults: int = 0
 
 
 def public_surface(source: str) -> dict[str, Symbol]:
@@ -316,19 +320,28 @@ def public_surface(source: str) -> dict[str, Symbol]:
 
     out: dict[str, Symbol] = {}
 
-    def params_of(node) -> tuple[str, ...]:
+    def params_of(node) -> tuple[tuple[str, ...], int]:
         a = node.args
         names = [p.arg for p in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
         if a.vararg:
             names.append("*" + a.vararg.arg)
         if a.kwarg:
             names.append("**" + a.kwarg.arg)
-        return tuple(names)
+        # Positional defaults always sit at the end; keyword-only ones are
+        # counted too, since a kwonly argument with a default is equally
+        # optional at every call site.
+        optional = len(a.defaults) + sum(1 for d in a.kw_defaults if d is not None)
+        if a.vararg:
+            optional += 1
+        if a.kwarg:
+            optional += 1
+        return tuple(names), optional
 
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not node.name.startswith("_"):
-                out[node.name] = Symbol(node.name, "function", params_of(node))
+                names, optional = params_of(node)
+                out[node.name] = Symbol(node.name, "function", names, optional)
         elif isinstance(node, ast.ClassDef):
             if node.name.startswith("_"):
                 continue
@@ -338,7 +351,8 @@ def public_surface(source: str) -> dict[str, Symbol]:
                     if child.name.startswith("_") and child.name != "__init__":
                         continue
                     dotted = f"{node.name}.{child.name}"
-                    out[dotted] = Symbol(dotted, "function", params_of(child))
+                    names, optional = params_of(child)
+                    out[dotted] = Symbol(dotted, "function", names, optional)
     return out
 
 
@@ -432,6 +446,28 @@ def signal_acceptance_untouched(acceptance: tuple[str, ...], changed: set[str]) 
                   {"classification": PRESERVED_BEHAVIOR})
 
 
+def _compatible_signature(before: Symbol, after: Symbol) -> bool:
+    """Whether every existing call of *before* still works against *after*.
+
+    True exactly when the old parameter list is a prefix of the new one and
+    every parameter added beyond it is optional. That is the shape of "this
+    function grew a feature flag", and it breaks nothing.
+
+    Everything else -- a parameter removed, renamed, reordered, or added
+    without a default -- breaks callers the acceptance suite may well not
+    cover, which is the blind spot this signal exists for.
+    """
+    old, new = before.params, after.params
+    if len(new) < len(old) or new[: len(old)] != old:
+        return False
+    added = len(new) - len(old)
+    if added == 0:
+        return True
+    # Every added parameter must be covered by the new signature's optional
+    # tail. Comparing counts is enough: defaults are always trailing.
+    return after.defaults >= added
+
+
 def signal_public_surface(
     before: dict[str, dict[str, Symbol]],
     after: dict[str, dict[str, Symbol]],
@@ -451,7 +487,7 @@ def signal_public_surface(
         for name, symbol in old.items():
             if name not in new:
                 removed.append(f"{rel}::{name}")
-            elif symbol.kind == "function" and new[name].params != symbol.params:
+            elif symbol.kind == "function" and not _compatible_signature(symbol, new[name]):
                 resigned.append(
                     f"{rel}::{name}({', '.join(symbol.params)}) -> ({', '.join(new[name].params)})"
                 )

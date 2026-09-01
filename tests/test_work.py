@@ -444,3 +444,80 @@ def test_evidence_survives_an_abandoned_run(repo, tmp_path):
     assert result.patch_path and Path(result.patch_path).exists()
     assert "n / 2" in Path(result.patch_path).read_text(encoding="utf-8")
     assert any("preservado" in n for n in result.notes)
+
+
+# ------------------------------------------------------------------ F-36
+
+
+@pytest.mark.parametrize(
+    "before,after,compatible",
+    [
+        ("def f(a, b):\n    pass\n", "def f(a, b, c=1):\n    pass\n", True),
+        ("def f(a, b):\n    pass\n", "def f(a, b, *, c=1):\n    pass\n", True),
+        ("def f(a, b):\n    pass\n", "def f(a, b, **kw):\n    pass\n", True),
+        ("def f(a, b):\n    pass\n", "def f(a, b, c):\n    pass\n", False),
+        ("def f(a, b):\n    pass\n", "def f(a):\n    pass\n", False),
+        ("def f(a, b):\n    pass\n", "def f(a, bee):\n    pass\n", False),
+        ("def f(a, b):\n    pass\n", "def f(b, a):\n    pass\n", False),
+        ("def f(a, b):\n    pass\n", "def f(a, b):\n    pass\n", True),
+    ],
+)
+def test_only_a_breaking_signature_change_counts_as_one(before, after, compatible):
+    """The self-dogfood run solved its ticket -- six of six acceptance tests
+    green, 241 pre-existing tests still passing, scope respected -- and was
+    blocked because grep had gained an optional argument. Which was the task.
+
+    Signature changes are not one thing. Added-with-a-default breaks no
+    existing caller; removed, renamed, reordered or added-without-a-default
+    breaks callers the acceptance suite may never touch, which is the blind
+    spot this signal exists for.
+    """
+    old = verify.public_surface(before)["f"]
+    new = verify.public_surface(after)["f"]
+    assert verify._compatible_signature(old, new) is compatible
+
+
+def test_growing_a_function_by_an_optional_argument_does_not_block(repo, tmp_path):
+    """The dogfood case, end to end."""
+    (repo / "pkg" / "calc.py").write_text(
+        "def halve(n):\n    return n / 0\n\n\ndef fmt(x):\n    return str(x)\n",
+        encoding="utf-8",
+    )
+    git(["commit", "-qam", "add fmt"], repo)
+    result = work.run_ticket(
+        ticket(repo), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("edit", path="pkg/calc.py",
+               old="def fmt(x):", new="def fmt(x, upper=False):"),
+            tc("run_tests"),
+            tc("finish", summary="hecho", status="DONE"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    signals = {s["name"]: s for s in result.conscience["signals"]}
+    assert signals["public_surface_preserved"]["verdict"] == verify.PASS
+    assert result.outcome == work.PASS
+
+
+def test_removing_an_argument_still_blocks(repo, tmp_path):
+    """F-36 narrows what is refused; it must not stop refusing real breaks."""
+    (repo / "pkg" / "calc.py").write_text(
+        "def halve(n):\n    return n / 0\n\n\ndef fmt(x, width):\n    return str(x)\n",
+        encoding="utf-8",
+    )
+    git(["commit", "-qam", "add fmt"], repo)
+    result = work.run_ticket(
+        ticket(repo), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("edit", path="pkg/calc.py",
+               old="def fmt(x, width):", new="def fmt(x):"),
+            tc("run_tests"),
+            tc("finish", summary="hecho", status="DONE"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    signals = {s["name"]: s for s in result.conscience["signals"]}
+    assert signals["public_surface_preserved"]["verdict"] == verify.INCONCLUSIVE
+    assert result.outcome == work.BLOCKED_BY_CONSCIENCE
