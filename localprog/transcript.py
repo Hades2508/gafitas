@@ -23,8 +23,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+#: Screen defaults. Correct for a five-call task inside an 8192-token window,
+#: and far too aggressive for debugging, where the output you need to compare
+#: against is by definition several turns old (F-07). ``Transcript`` takes both
+#: as instance fields now; these remain the values the frozen screen uses.
 KEEP_TURNS = 3
 ELIDE_OVER_CHARS = 500
+
+#: Working defaults, for a real context window. Elision still exists -- a
+#: transcript that grows without bound falls off the GPU and the run slows by
+#: 3.5x (measured, PROGRAMMER_HARDWARE_PROFILE_V1) -- but it now keeps enough
+#: history for an agent to compare a failure against the edit that caused it.
+WORK_KEEP_TURNS = 8
+WORK_ELIDE_OVER_CHARS = 2500
 
 
 @dataclass
@@ -42,6 +53,8 @@ class Transcript:
     user: str
     turns: list[Turn] = field(default_factory=list)
     elisions: int = 0
+    keep_turns: int = KEEP_TURNS
+    elide_over_chars: int = ELIDE_OVER_CHARS
 
     def add(self, turn: Turn) -> None:
         self.turns.append(turn)
@@ -61,9 +74,9 @@ class Transcript:
             out.append(turn.assistant)
             if turn.tool_name is None:
                 continue
-            recent = turn.number > last - KEEP_TURNS
+            recent = turn.number > last - self.keep_turns
             payload = turn.tool_payload
-            if not recent and not turn.is_error and len(payload) > ELIDE_OVER_CHARS:
+            if not recent and not turn.is_error and len(payload) > self.elide_over_chars:
                 payload = self._placeholder(turn)
                 self.elisions += 1
             out.append({"role": "tool", "name": turn.tool_name, "content": payload})
@@ -80,8 +93,8 @@ class Transcript:
         return {
             "system": self.system,
             "user": self.user,
-            "keep_turns": KEEP_TURNS,
-            "elide_over_chars": ELIDE_OVER_CHARS,
+            "keep_turns": self.keep_turns,
+            "elide_over_chars": self.elide_over_chars,
             "elisions_last_render": self.elisions,
             "turns": [
                 {

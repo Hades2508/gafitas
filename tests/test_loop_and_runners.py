@@ -105,7 +105,7 @@ def test_the_error_text_actually_reaches_the_model(ctx):
 def test_invalid_calls_are_counted_separately_from_tool_errors(ctx):
     result = run(ctx, [
         {"content": "solo texto, sin llamada"},        # invalid
-        tc("list_dir", path="."),                       # invalid (unknown tool)
+        tc("delete_file", path="."),                    # invalid (unknown tool)
         tc("read_file", path="nope.py"),                # tool error
         tc("read_file", path="calc.py"),
     ], max_turns=4)

@@ -140,6 +140,18 @@ ERROR_SYNTAX_AFTER_EDIT = "ERROR_SYNTAX_AFTER_EDIT"
 ERROR_NOT_IN_WRITE_SCOPE = "ERROR_NOT_IN_WRITE_SCOPE"
 ERROR_FILE_EXISTS = "ERROR_FILE_EXISTS"
 ERROR_NOTHING_CHANGED = "ERROR_NOTHING_CHANGED"
+#: ``run`` was handed an executable outside the interpreter allowlist. A
+#: ToolError and not an InvalidCall: reaching for ``npm`` is a reasonable
+#: thing for a model to try, and the refusal is a fact about this sandbox
+#: rather than a malformed call.
+ERROR_COMMAND_NOT_ALLOWED = "ERROR_COMMAND_NOT_ALLOWED"
+#: ``list_dir`` on a directory that exists and holds nothing. Kept distinct
+#: from ERROR_FILE_NOT_FOUND so the model does not go hunting for a typo it
+#: did not make.
+ERROR_EMPTY_DIRECTORY = "ERROR_EMPTY_DIRECTORY"
+#: A listing was truncated. The model is told how many it did not see, so it
+#: can narrow instead of assuming it saw everything.
+ERROR_TOO_MANY_ENTRIES = "ERROR_TOO_MANY_ENTRIES"
 
 TOOL_ERROR_CODES = frozenset({
     ERROR_PATH_OUTSIDE_REPO,
@@ -155,6 +167,9 @@ TOOL_ERROR_CODES = frozenset({
     ERROR_NOT_IN_WRITE_SCOPE,
     ERROR_FILE_EXISTS,
     ERROR_NOTHING_CHANGED,
+    ERROR_COMMAND_NOT_ALLOWED,
+    ERROR_EMPTY_DIRECTORY,
+    ERROR_TOO_MANY_ENTRIES,
 })
 
 # ------------------------------------------------------------- invalid codes

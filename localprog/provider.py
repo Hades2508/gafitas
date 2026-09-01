@@ -21,6 +21,16 @@ from .errors import ProviderError
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434/api/chat"
 DEFAULT_NUM_CTX = 8192          # contract §C.2: the only 100%-GPU rung measured
+
+#: Working context (F-06). 8192 is the largest window that keeps a 7B-class
+#: model wholly on 12 GB of VRAM, and it was the right call for a five-call
+#: screen. For real work the transcript alone -- three file reads and two test
+#: runs -- passes it before the agent has decided anything, and the elision that
+#: follows deletes exactly the history a debugging loop needs. 16384 still fits
+#: the 4B-class models this is aimed at; models that do not fit degrade in
+#: speed, which is visible in usage.provider_seconds rather than silent.
+WORK_NUM_CTX = 16384
+WORK_NUM_PREDICT = 2048
 DEFAULT_NUM_PREDICT = 1024
 DEFAULT_TIMEOUT = 120.0
 
@@ -57,6 +67,7 @@ class OllamaProvider:
     def describe(self) -> dict:
         return {
             "provider": "ollama",
+            "model_class": "LOCAL",
             "model": self.model,
             "endpoint": self.endpoint,
             "num_ctx": self.num_ctx,
@@ -128,7 +139,8 @@ class FakeProvider:
         self.index = 0
 
     def describe(self) -> dict:
-        return {"provider": "fake", "model": self.model, "scripted_steps": len(self.script)}
+        return {"provider": "fake", "model_class": "FAKE", "model": self.model,
+                "scripted_steps": len(self.script)}
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
         self.calls.append({"messages": [dict(m) for m in messages], "tools": bool(tools)})

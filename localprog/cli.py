@@ -11,9 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-from . import deps, evidence, screen, step1, telemetry_bridge
+from . import deps, evidence, screen, step1, telemetry_bridge, work
 from .errors import HarnessInvalid
 from .provider import OllamaProvider
 
@@ -125,6 +126,102 @@ def cmd_step1(args) -> int:
     return 2 if voided else 0
 
 
+def cmd_work(args) -> int:
+    """Do real tickets. The productive entrypoint (F-11).
+
+    Unlike ``screen`` and ``step1`` this is not a gate: it does not classify a
+    model, it does a job. The exit code is about whether the WORK is usable, so
+    a caller can chain it -- 0 every ticket passed, 1 something failed or was
+    refused by the conscience, 2 a harness defect voided a run.
+    """
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    telemetry = telemetry_bridge.open_telemetry(
+        args.run_id, Path(args.telemetry_db) if args.telemetry_db else None
+    )
+    factory = lambda name: OllamaProvider(  # noqa: E731
+        name, num_ctx=args.num_ctx, num_predict=args.num_predict, timeout=args.timeout
+    )
+    records = []
+    try:
+        for path in args.tickets:
+            ticket = work.load_ticket(Path(path))
+            if args.max_turns:
+                ticket = replace(ticket, max_turns=args.max_turns)
+            record = work.run_ticket(
+                ticket, args.model, provider_factory=factory,
+                out_dir=out, telemetry=telemetry, num_ctx=args.num_ctx,
+            )
+            records.append(record)
+            print(f"  {record.ticket_id:<16} {record.outcome:<24} "
+                  f"{record.turns_used:>3} turnos  "
+                  f"{record.usage.get('output_tokens', 0):>6} tok_out  "
+                  f"{record.wall_seconds:>6.1f}s")
+    finally:
+        telemetry.close()
+
+    passed = [r for r in records if r.outcome == work.PASS]
+    voided = [r for r in records if r.outcome in (work.HARNESS_INVALID, work.NON_DISCRIMINATING)]
+    (out / "WORK_RESULTS.json").write_text(
+        json.dumps({
+            "provenance": deps.provenance(), "model": args.model,
+            "passed": len(passed), "total": len(records),
+            "usage_total": _sum_usage(records),
+            "records": [r.to_dict() for r in records],
+        }, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _write_work_report(out, records)
+    print(f"{len(passed)}/{len(records)} PASS -> {out}")
+    if any(r.outcome == work.HARNESS_INVALID for r in records):
+        evidence.harness_invalid_notice(
+            out, runs=[r.to_dict() | {"label": r.label} for r in records
+                       if r.outcome == work.HARNESS_INVALID]
+        )
+        return 2
+    return 0 if len(passed) == len(records) and not voided else 1
+
+
+def _sum_usage(records) -> dict:
+    """Cost, split by model class. Local, Luna and Claude are different budgets
+    with different prices, and adding them up hides which part is expensive."""
+    total: dict = {}
+    for r in records:
+        bucket = total.setdefault(r.model_class, {
+            "tickets": 0, "calls": 0, "input_tokens": 0,
+            "output_tokens": 0, "cached_tokens": 0, "wall_seconds": 0.0,
+        })
+        bucket["tickets"] += 1
+        bucket["wall_seconds"] = round(bucket["wall_seconds"] + r.wall_seconds, 2)
+        for key in ("calls", "input_tokens", "output_tokens", "cached_tokens"):
+            bucket[key] += int(r.usage.get(key, 0) or 0)
+    return total
+
+
+NL = chr(10)
+
+
+def _write_work_report(out: Path, records) -> None:
+    lines = ["# GAFITAS WORK", ""]
+    for r in records:
+        lines.append(
+            f"- `{r.ticket_id}` **{r.outcome}** ({r.model}, {r.loop_outcome}, "
+            f"{r.turns_used} turnos, {r.invalid_calls} inv, {r.tool_errors} err)"
+        )
+        if r.changed_files:
+            lines.append(f"  - cambiados: {', '.join(r.changed_files[:8])}")
+        for note in r.notes[:4]:
+            lines.append(f"  - {note}")
+    lines += ["", "## Coste por clase de modelo", ""]
+    for cls, bucket in _sum_usage(records).items():
+        lines.append(
+            f"- **{cls}**: {bucket['tickets']} tickets, {bucket['calls']} llamadas, "
+            f"{bucket['input_tokens']} tok_in, {bucket['output_tokens']} tok_out, "
+            f"{bucket['wall_seconds']:.1f}s"
+        )
+    (out / "WORK_REPORT.md").write_text(NL.join(lines) + NL, encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="localprog")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -147,9 +244,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--run-id", default="LOCAL_PROGRAMMER_STEP1")
     p.add_argument("--telemetry-db", default=None)
 
+    p = sub.add_parser("work", help="Do real tickets (the productive path)")
+    p.add_argument("--out", required=True)
+    p.add_argument("--model", required=True)
+    p.add_argument("--tickets", nargs="+", required=True)
+    p.add_argument("--num-ctx", type=int, default=work.WORK_NUM_CTX)
+    p.add_argument("--num-predict", type=int, default=work.WORK_NUM_PREDICT)
+    p.add_argument("--max-turns", type=int, default=None)
+    p.add_argument("--timeout", type=float, default=300.0)
+    p.add_argument("--run-id", default="GAFITAS_WORK")
+    p.add_argument("--telemetry-db", default=None)
+
     args = parser.parse_args(argv)
     try:
-        return {"selfcheck": cmd_selfcheck, "screen": cmd_screen, "step1": cmd_step1}[args.command](args)
+        return {"selfcheck": cmd_selfcheck, "screen": cmd_screen,
+                "step1": cmd_step1, "work": cmd_work}[args.command](args)
     except HarnessInvalid as exc:
         print(f"HARNESS_INVALID: {exc.detail}", file=sys.stderr)
         return 3

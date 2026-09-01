@@ -25,9 +25,17 @@ from typing import Any
 
 from . import protocol, tools
 from .errors import ERROR_NOTHING_CHANGED, HarnessInvalid, InvalidCall, ProviderError
-from .transcript import Transcript, Turn
+from .transcript import ELIDE_OVER_CHARS, KEEP_TURNS, Transcript, Turn
 
-MAX_TURNS = 12  # contract §C.2
+MAX_TURNS = 12  # contract §C.2 -- the frozen screen's budget, unchanged.
+
+#: The budget for real work (F-06). Twelve turns cannot hold
+#: READ -> SEARCH -> EDIT -> RUN -> OBSERVE -> DEBUG -> REPLAN -> EDIT -> TEST:
+#: reading three files and running the suite twice spends half of it before any
+#: thinking happens, which is why every STEP1 run ended in BUDGET_EXHAUSTED
+#: rather than at a decision. This is still a HARD bound (I10) -- exhausting it
+#: is a result, not an error -- it is simply a bound at the scale of the task.
+WORK_MAX_TURNS = 40
 
 FINISHED = "FINISHED"
 BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
@@ -52,6 +60,13 @@ class LoopResult:
     finished_without_changes: bool = False
     elisions: int = 0
     wall_seconds: float = 0.0
+    #: Cost, split so LOCAL / LUNA / CLAUDE can be compared (F-08). Filled from
+    #: whatever the provider reports; a provider that reports nothing leaves
+    #: zeros here rather than silently inventing numbers.
+    usage: dict = field(default_factory=lambda: {
+        "calls": 0, "input_tokens": 0, "output_tokens": 0,
+        "cached_tokens": 0, "provider_seconds": 0.0,
+    })
     provider_error: dict | None = None
     harness_invalid: dict | None = None
     events: list[dict] = field(default_factory=list)
@@ -80,9 +95,38 @@ class LoopResult:
             "finished_without_changes": self.finished_without_changes,
             "elisions": self.elisions,
             "wall_seconds": round(self.wall_seconds, 3),
+            "usage": dict(self.usage),
             "provider_error": self.provider_error,
             "harness_invalid": self.harness_invalid,
         }
+
+
+#: Where each provider family puts its token counts. Ollama and the
+#: OpenAI-shaped APIs disagree about every single name, and a provider that
+#: reports nothing must leave the counters alone rather than contribute zeros
+#: that later read as "this call was free".
+_USAGE_KEYS = (
+    ("input_tokens", ("prompt_eval_count", "prompt_tokens", "input_tokens")),
+    ("output_tokens", ("eval_count", "completion_tokens", "output_tokens")),
+    ("cached_tokens", ("cached_tokens", "cache_read_input_tokens")),
+)
+
+
+def _accumulate_usage(usage: dict, raw: Any) -> None:
+    """Fold one provider response's reported cost into the running total."""
+    usage["calls"] += 1
+    if not isinstance(raw, dict):
+        return
+    source = raw.get("usage") if isinstance(raw.get("usage"), dict) else raw
+    for target, names in _USAGE_KEYS:
+        for name in names:
+            value = source.get(name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                usage[target] += value
+                break
+    nanoseconds = raw.get("total_duration")
+    if isinstance(nanoseconds, (int, float)) and not isinstance(nanoseconds, bool):
+        usage["provider_seconds"] = round(usage["provider_seconds"] + nanoseconds / 1e9, 3)
 
 
 def _assistant_message(message: dict) -> dict:
@@ -117,12 +161,21 @@ def run_loop(
     objective: str,
     protocol_name: str = "A",
     max_turns: int = MAX_TURNS,
+    keep_turns: int | None = None,
+    elide_over_chars: int | None = None,
 ) -> LoopResult:
     """Drive *provider* against *ctx* until it finishes or runs out of budget."""
     if protocol_name not in ("A", "B"):
         raise HarnessInvalid(f"unknown protocol {protocol_name!r}")
 
-    transcript = Transcript(system=system, user=objective)
+    transcript = Transcript(
+        system=system,
+        user=objective,
+        keep_turns=KEEP_TURNS if keep_turns is None else keep_turns,
+        elide_over_chars=(
+            ELIDE_OVER_CHARS if elide_over_chars is None else elide_over_chars
+        ),
+    )
     schema = tools.native_schema() if protocol_name == "A" else None
     result = LoopResult(outcome=BUDGET_EXHAUSTED)
     used: Counter = Counter()
@@ -145,6 +198,7 @@ def run_loop(
                 events.append({"turn": turn, "provider_error": exc.to_dict()})
                 break
 
+            _accumulate_usage(result.usage, raw)
             message = raw.get("message", {}) if isinstance(raw, dict) else {}
             assistant = _assistant_message(message)
 

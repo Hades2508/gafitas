@@ -11,8 +11,13 @@ from localprog import errors, protocol, tools
 
 
 def test_unknown_tool_is_an_invalid_call_not_a_crash(ctx):
-    """A model asking for list_dir -- which the contract does not define."""
-    out = tools.dispatch(ctx, "list_dir", {"path": "."})
+    """A model asking for a tool that does not exist.
+
+    The example used to be ``list_dir``, which the contract did not define.
+    F-03 added it, so the test now names a tool that really is absent --
+    otherwise this would have quietly stopped testing anything.
+    """
+    out = tools.dispatch(ctx, "delete_file", {"path": "."})
     assert not out.ok and out.invalid_call
     assert out.code == errors.ERROR_UNKNOWN_TOOL
     assert "read_file" in out.feedback  # it is told what does exist
@@ -58,7 +63,7 @@ def test_an_unexpected_exception_becomes_harness_invalid(ctx, monkeypatch):
 
 
 def test_tool_error_and_invalid_call_are_never_both_set(ctx):
-    for name, args in [("read_file", {"path": "nope"}), ("list_dir", {}),
+    for name, args in [("read_file", {"path": "nope"}), ("delete_file", {}),
                        ("edit", {"path": "calc.py"}), ("grep", {"pattern": "(["})]:
         out = tools.dispatch(ctx, name, args)
         assert not (out.tool_error and out.invalid_call)

@@ -240,7 +240,7 @@ def test_finish_without_changes_is_refused(ctx):
 def test_finish_after_a_change_is_accepted(ctx):
     call(ctx, "edit", path="calc.py", old="def add", new="def suma")
     out = call(ctx, "finish", summary="hecho")
-    assert out.ok and out.value == "FINISHED"
+    assert out.ok and out.value == "FINISHED[DONE]"
 
 
 @pytest.mark.parametrize("name", sorted(tools.SPECS))
