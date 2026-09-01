@@ -180,6 +180,31 @@ class CodexProvider:
             "timeout": self.timeout,
         }
 
+    #: Codex is an AGENT, not a completion endpoint: it has its own sandbox and
+    #: its own file tools, and it reaches for them first. On the first real run
+    #: it looked at its own empty scratch directory, concluded it could not see
+    #: the repository, and called finish(BLOCKED) on turn 2 -- while the
+    #: harness had already handed it a correct listing of the real tree.
+    #:
+    #: It was not wrong about what it could see. It was wrong about which
+    #: hands were its own. So the provider states its own execution model,
+    #: because that is a fact about how this tier is invoked rather than
+    #: anything to do with the task.
+    PREAMBLE = """IMPORTANTE - COMO FUNCIONA ESTE ENTORNO
+
+No estas trabajando directamente sobre el repositorio. Tu directorio actual
+esta VACIO a proposito, y tus propias herramientas de fichero no sirven aqui:
+no busques, no leas y no ejecutes nada por tu cuenta, porque no veras el
+repositorio real y concluiras en falso que esta vacio.
+
+La UNICA forma de actuar es responder con un bloque ```json describiendo una
+llamada. Otro proceso la ejecuta sobre el repositorio real, con permisos, y te
+devuelve el resultado en el siguiente turno, marcado como RESULTADO DE <tool>.
+
+Los RESULTADO DE ... que ves mas abajo son reales: vienen del repositorio de
+verdad. Fiate de ellos y no de lo que veas en tu propio sandbox.
+"""
+
     @staticmethod
     def _render(messages: list[dict]) -> str:
         """Flatten the transcript into one prompt.
@@ -188,7 +213,7 @@ class CodexProvider:
         the agent's own reasoning become the same kind of text, and the model
         starts answering questions it already answered.
         """
-        parts: list[str] = []
+        parts: list[str] = [CodexProvider.PREAMBLE]
         for message in messages:
             role = message.get("role")
             content = message.get("content") or ""

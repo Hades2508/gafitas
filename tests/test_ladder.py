@@ -218,3 +218,17 @@ def test_the_luna_prompt_keeps_roles_apart():
     assert "TAREA:" in rendered and "TASK" in rendered
     assert "RESULTADO DE read_file" in rendered
     assert rendered.rstrip().endswith("llamada.")
+
+
+def test_the_luna_prompt_explains_that_its_own_sandbox_is_empty():
+    """Codex is an agent, not a completion endpoint. On the first real run it
+    looked at its own empty scratch directory, decided it could not see the
+    repository, and called finish(BLOCKED) on turn 2 -- while the harness had
+    already handed it a correct listing of the real tree.
+
+    It was not wrong about what it could see. It was wrong about which hands
+    were its own."""
+    rendered = CodexProvider._render([{"role": "user", "content": "T"}])
+    assert "VACIO a proposito" in rendered
+    assert "no veras el repositorio real" in rendered
+    assert rendered.startswith("IMPORTANTE"), "it must be read before anything else"
