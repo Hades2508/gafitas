@@ -590,7 +590,7 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
     return f"write_file aplicada en {rel}"
 
 
-def list_dir(ctx: ToolContext, path: Any = ".") -> dict:
+def list_dir(ctx: ToolContext, path: Any = ".", recursive: Any = False) -> dict:
     """What is in a directory. The tool whose absence crippled exploration.
 
     F-03: there was no way to enumerate a directory at all, so an agent facing
@@ -604,6 +604,8 @@ def list_dir(ctx: ToolContext, path: Any = ".") -> dict:
     ``pkg/`` is an ordinary slip, and the useful answer is that file's own
     directory plus a note saying so, not a refusal.
     """
+    if not isinstance(recursive, bool):
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "recursive debe ser booleano")
     rel, target = _resolve_dir(ctx, path if path is not None else "")
 
     note = None
@@ -624,16 +626,37 @@ def list_dir(ctx: ToolContext, path: Any = ".") -> dict:
 
     dirs: list[str] = []
     files: list[dict] = []
-    for entry in entries:
-        if entry.name in SKIP_DIRS:
-            continue
-        try:
-            if entry.is_dir():
-                dirs.append(entry.name + "/")
-            else:
-                files.append({"name": entry.name, "bytes": entry.stat().st_size})
-        except OSError:
-            continue  # vanished or unreadable between iterdir and stat
+    if recursive:
+        pending = [(target, "")]
+        while pending:
+            current, prefix = pending.pop(0)
+            try:
+                children = sorted(current.iterdir(), key=lambda q: (q.is_file(), q.name.lower()))
+            except OSError:
+                continue
+            for entry in children:
+                if entry.name in SKIP_DIRS:
+                    continue
+                child_name = f"{prefix}{entry.name}"
+                try:
+                    if entry.is_dir():
+                        dirs.append(child_name + "/")
+                        pending.append((entry, child_name + "/"))
+                    else:
+                        files.append({"name": child_name, "bytes": entry.stat().st_size})
+                except OSError:
+                    continue
+    else:
+        for entry in entries:
+            if entry.name in SKIP_DIRS:
+                continue
+            try:
+                if entry.is_dir():
+                    dirs.append(entry.name + "/")
+                else:
+                    files.append({"name": entry.name, "bytes": entry.stat().st_size})
+            except OSError:
+                continue  # vanished or unreadable between iterdir and stat
 
     total = len(dirs) + len(files)
     if total == 0:
@@ -891,7 +914,7 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
 #: says ``run_tests``.
 SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "read_file": (("path",), ("start", "end")),
-    "list_dir": ((), ("path",)),
+    "list_dir": ((), ("path", "recursive")),
     "grep": (("pattern",), ("glob", "context", "ignore_case")),
     "list_symbols": (("path",), ()),
     "edit": (("path", "old", "new"), ()),
@@ -1036,7 +1059,8 @@ TOOL_DOC: dict[str, str] = {
     "list_dir": (
         "Lista lo que hay en un directorio: subdirectorios y ficheros con su tamano. "
         "Empieza por aqui cuando no conozcas la estructura del repositorio. "
-        "Sin argumentos lista la raiz."
+        "Sin argumentos lista la raiz. Con recursive=True incluye tambien el "
+        "contenido de los subdirectorios, usando rutas relativas."
     ),
     "grep": (
         "Busca una expresion regular de Python en los ficheros del repositorio y "
@@ -1098,6 +1122,7 @@ TOOL_DOC: dict[str, str] = {
 #: is not stated is a parameter the model has to guess.
 PARAM_DOC: dict[str, str] = {
     "path": "Ruta relativa a la raiz del repositorio, con barras normales: 'pkg/mod.py'.",
+    "recursive": "Booleano; si es True, lista tambien el contenido de los subdirectorios con rutas relativas. Por defecto False.",
     "start": "Primera linea, empezando en 1. En read_file, null lee desde el principio.",
     "end": "Ultima linea, incluida. En read_file, null lee hasta el final.",
     "pattern": "Expresion regular de Python. Se busca linea a linea.",
@@ -1141,6 +1166,7 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
     """
     types = {
         "path": {"type": "string"},
+        "recursive": {"type": "boolean"},
         "start": {"type": ["integer", "null"]},
         "end": {"type": ["integer", "null"]},
         "pattern": {"type": "string"},
