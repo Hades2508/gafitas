@@ -195,6 +195,7 @@ class WorkResult:
     tool_errors: int = 0
     loops: int = 0
     max_repeat: int = 0
+    provider_retries: int = 0
     tools_used: dict = field(default_factory=dict)
     changed_files: list[str] = field(default_factory=list)
     unauthorised_writes: list[str] = field(default_factory=list)
@@ -226,6 +227,7 @@ class WorkResult:
             "turns_used": self.turns_used, "invalid_calls": self.invalid_calls,
             "tool_errors": self.tool_errors, "loops": self.loops,
             "max_repeat": self.max_repeat,
+            "provider_retries": self.provider_retries,
             "tools_used": self.tools_used,
             "changed_files": self.changed_files,
             "unauthorised_writes": self.unauthorised_writes,
@@ -369,6 +371,7 @@ def run_ticket(
         result.tool_errors = outcome.tool_errors
         result.loops = outcome.loops
         result.max_repeat = outcome.max_repeat
+        result.provider_retries = outcome.provider_retries
         result.tools_used = outcome.tools_used
         result.usage = dict(outcome.usage)
         result.commands_run = list(ctx.commands_run)
@@ -383,19 +386,32 @@ def run_ticket(
                 f"y no se recupero; la run se corto en vez de gastar el resto del "
                 f"presupuesto repitiendo el mismo fallo."
             )
-        if outcome.outcome == loop.PROVIDER_ERROR:
-            result.outcome = PROVIDER_ERROR
+        if outcome.outcome in (loop.PROVIDER_ERROR, loop.HARNESS_INVALID):
+            # F-31: record what the agent actually did before abandoning the
+            # run. This used to return immediately, so a run that made five
+            # edits before the server rejected one malformed tool call sealed a
+            # record saying it had changed nothing -- a failure destroying its
+            # own evidence on the way out, which experiments.md forbids.
+            # Whatever those edits were, somebody may want to look at them.
+            aborted = _changed_since(pre_files, _tracked_files(box.path))
+            result.changed_files = sorted(aborted)
+            result.unauthorised_writes = sorted(
+                rel for rel in aborted if not ticket.scope.allows(rel, creating=True)
+            )
+            result.commands_run = list(ctx.commands_run)
+            result.outcome = (
+                PROVIDER_ERROR if outcome.outcome == loop.PROVIDER_ERROR else HARNESS_INVALID
+            )
             result.scoreable = False
             result.discrimination = pre_disc.to_dict()
+            result.notes.append(
+                f"run abandonada tras {outcome.turns_used} turnos; "
+                f"{len(aborted)} ficheros ya modificados quedan en el workspace preservado."
+            )
             result.wall_seconds = time.perf_counter() - started
-            _seal(out_dir, ticket, result, outcome.events, "")
-            return result
-        if outcome.outcome == loop.HARNESS_INVALID:
-            result.outcome = HARNESS_INVALID
-            result.scoreable = False
-            result.discrimination = pre_disc.to_dict()
-            result.wall_seconds = time.perf_counter() - started
-            _seal(out_dir, ticket, result, outcome.events, "")
+            result.patch_path = _seal(
+                out_dir, ticket, result, outcome.events, _make_patch(box.path, aborted)
+            )
             return result
 
         # ---------------- what actually changed on disk -------------------

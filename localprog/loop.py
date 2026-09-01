@@ -67,6 +67,17 @@ BUDGET_WARNING_TURNS = 8
 #: evidence that whatever happened in between did not matter.
 REPEAT_NOTICE_AFTER = 2
 
+#: Extra attempts for one provider call before the run is abandoned (F-30).
+PROVIDER_RETRIES = 2
+
+#: Which provider failures are worth asking again about. A malformed tool call
+#: rejected by the server's parser (HTTP_STATUS 500), a dropped connection, a
+#: timeout or an unparseable body can all differ on the next sample.
+#:
+#: CONTEXT_OVERFLOW is deliberately absent: the same prompt overflows the same
+#: window every time, so a retry only delays a defect that is ours to fix.
+RETRYABLE_PROVIDER_KINDS = frozenset({"HTTP_STATUS", "TIMEOUT", "TRANSPORT", "BAD_BODY"})
+
 
 @dataclass
 class LoopResult:
@@ -93,6 +104,9 @@ class LoopResult:
     #: Longest run of byte-identical tool results. A high number on a failed run
     #: means thrashing -- the agent kept measuring instead of changing anything.
     max_repeat: int = 0
+    #: Provider calls that failed and were retried successfully. Non-zero means
+    #: the run survived something that used to end it (F-30).
+    provider_retries: int = 0
     provider_error: dict | None = None
     harness_invalid: dict | None = None
     events: list[dict] = field(default_factory=list)
@@ -124,6 +138,7 @@ class LoopResult:
             "usage": dict(self.usage),
             "stalled_after": self.stalled_after,
             "max_repeat": self.max_repeat,
+            "provider_retries": self.provider_retries,
             "provider_error": self.provider_error,
             "harness_invalid": self.harness_invalid,
         }
@@ -258,12 +273,26 @@ def run_loop(
             messages = transcript.messages()
             result.elisions = transcript.elisions
 
-            try:
-                raw = provider.chat(messages, schema)
-            except ProviderError as exc:
+            raw = None
+            last_error: ProviderError | None = None
+            for attempt in range(PROVIDER_RETRIES + 1):
+                try:
+                    raw = provider.chat(messages, schema)
+                    last_error = None
+                    break
+                except ProviderError as exc:
+                    last_error = exc
+                    retryable = exc.kind in RETRYABLE_PROVIDER_KINDS
+                    events.append({
+                        "turn": turn, "provider_error": exc.to_dict(),
+                        "attempt": attempt + 1, "retryable": retryable,
+                    })
+                    if not retryable or attempt == PROVIDER_RETRIES:
+                        break
+                    result.provider_retries += 1
+            if last_error is not None:
                 result.outcome = PROVIDER_ERROR
-                result.provider_error = exc.to_dict()
-                events.append({"turn": turn, "provider_error": exc.to_dict()})
+                result.provider_error = last_error.to_dict()
                 break
 
             before_input = result.usage["input_tokens"]

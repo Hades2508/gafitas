@@ -62,10 +62,41 @@ def test_budget_exhausted_is_a_result_not_an_error(ctx):
     errors.ProviderError("TRANSPORT", "connection refused"),
 ])
 def test_provider_failure_is_structured_and_not_scoreable(ctx, error):
-    result = run(ctx, [tc("read_file", path="calc.py"), error])
+    """A provider failure that persists across every retry ends the run.
+
+    The error is scripted PROVIDER_RETRIES + 1 times because since F-30 one bad
+    response no longer ends anything -- qwen3.5:9b lost thirty turns of real
+    work to a single malformed tool call the server rejected.
+    """
+    attempts = [error] * (loop.PROVIDER_RETRIES + 1)
+    result = run(ctx, [tc("read_file", path="calc.py"), *attempts])
     assert result.outcome == loop.PROVIDER_ERROR
     assert result.scoreable is False
     assert result.provider_error["kind"] == error.kind
+
+
+def test_a_transient_provider_failure_does_not_end_the_run(ctx):
+    """F-30, the case that matters. The server rejects one malformed tool call;
+    asking again gets a good one, because the failure was sampling noise in a
+    single generation rather than anything wrong with the machine."""
+    from localprog.errors import ProviderError
+
+    script = solve_script()
+    script.insert(1, ProviderError("HTTP_STATUS", "500: XML syntax error", status=500))
+    result = run(ctx, script, max_turns=8)
+    assert result.outcome == loop.FINISHED
+    assert result.provider_retries == 1
+    assert result.tests_green
+
+
+def test_a_context_overflow_is_never_retried(ctx):
+    """It is deterministic: the same prompt overflows the same window every
+    time. Retrying only delays a defect that is ours to fix."""
+    from localprog.errors import ProviderError
+
+    result = run(ctx, [ProviderError("CONTEXT_OVERFLOW", "400: too big", status=400)])
+    assert result.outcome == loop.PROVIDER_ERROR
+    assert result.provider_retries == 0
 
 
 def test_provider_failure_on_the_first_turn_still_records(ctx):

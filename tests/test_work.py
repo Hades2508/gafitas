@@ -334,7 +334,11 @@ def test_provider_failure_is_never_scored_against_the_model(repo, tmp_path):
 
     result = work.run_ticket(
         ticket(repo), "fake",
-        provider_factory=lambda _m: FakeProvider([ProviderError("HTTP_STATUS", "500")]),
+        provider_factory=lambda _m: FakeProvider(
+            # Repeated past the retry budget: since F-30 a single failure is
+            # retried rather than ending the run.
+            [ProviderError("HTTP_STATUS", "500")] * 3
+        ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
     )
     assert result.outcome == work.PROVIDER_ERROR
@@ -415,3 +419,28 @@ def test_a_malformed_ticket_is_a_harness_defect_not_a_model_failure(tmp_path):
     with pytest.raises(HarnessInvalid) as excinfo:
         work.load_ticket(bad)
     assert "objective" in excinfo.value.detail
+
+
+def test_evidence_survives_an_abandoned_run(repo, tmp_path):
+    """F-31. qwen3.5:9b made five edits and then the server rejected one
+    malformed tool call. The sealed record said it had changed nothing.
+
+    A failure destroying its own evidence on the way out is the exact pattern
+    experiments.md forbids, and those five edits might have been good."""
+    from localprog.errors import ProviderError
+
+    out = tmp_path / "out"
+    result = work.run_ticket(
+        ticket(repo), "fake",
+        provider_factory=lambda _m: FakeProvider([
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            *([ProviderError("HTTP_STATUS", "500: XML syntax error")] * 3),
+        ]),
+        out_dir=out, base_dir=tmp_path,
+    )
+    assert result.outcome == work.PROVIDER_ERROR
+    assert result.scoreable is False
+    assert result.changed_files == ["pkg/calc.py"], "what it did must be recorded"
+    assert result.patch_path and Path(result.patch_path).exists()
+    assert "n / 2" in Path(result.patch_path).read_text(encoding="utf-8")
+    assert any("preservado" in n for n in result.notes)
