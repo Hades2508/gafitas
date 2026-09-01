@@ -320,7 +320,7 @@ def read_file(ctx: ToolContext, path: Any, start: Any = None, end: Any = None) -
     return body
 
 
-def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py", context: Any = 0) -> Any:
+def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py", context: Any = 0, ignore_case: Any = False) -> Any:
     """Search the repository, optionally returning lines around each hit.
 
     ``context`` (F-33) is the difference between one call and two. Without it,
@@ -336,8 +336,10 @@ def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py", context: Any = 0
         context = 0
     if not isinstance(context, int) or isinstance(context, bool) or not 0 <= context <= 20:
         raise InvalidCall(ERROR_BAD_ARGUMENTS, "context debe ser un entero entre 0 y 20")
+    if not isinstance(ignore_case, bool):
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "ignore_case debe ser booleano")
     try:
-        rx = re.compile(pattern)
+        rx = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
     except re.error as exc:
         raise ToolError(ERROR_BAD_PATTERN, str(exc)) from None
 
@@ -890,7 +892,7 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
 SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "read_file": (("path",), ("start", "end")),
     "list_dir": ((), ("path",)),
-    "grep": (("pattern",), ("glob", "context")),
+    "grep": (("pattern",), ("glob", "context", "ignore_case")),
     "list_symbols": (("path",), ()),
     "edit": (("path", "old", "new"), ()),
     "replace_lines": (("path", "start", "end", "content"), ()),
@@ -1041,7 +1043,8 @@ TOOL_DOC: dict[str, str] = {
         "devuelve fichero, linea y texto de cada coincidencia. Es la forma de "
         "encontrar donde se define o se usa algo cuando no sabes en que fichero "
         "esta. Con context=N te devuelve ademas N lineas antes y despues de cada "
-        "coincidencia, asi que muchas veces te ahorra el read_file siguiente."
+        "coincidencia, asi que muchas veces te ahorra el read_file siguiente. "
+        "Con ignore_case=True busca sin distinguir mayusculas y minusculas."
     ),
     "list_symbols": (
         "Devuelve las funciones y clases definidas en un fichero Python, con su "
@@ -1100,6 +1103,7 @@ PARAM_DOC: dict[str, str] = {
     "pattern": "Expresion regular de Python. Se busca linea a linea.",
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
     "context": "Lineas de contexto alrededor de cada coincidencia (0-20). 0 solo da la linea.",
+    "ignore_case": "Booleano; si es True, busca sin distinguir mayusculas y minusculas. Por defecto False.",
     "old": "El texto exacto que hay ahora en el fichero, incluida su indentacion. Debe ser unico.",
     "new": "El texto que lo sustituye. Cadena vacia para borrar el fragmento.",
     "content": "Contenido nuevo: el fichero entero en write_file, o el texto que sustituye al rango en replace_lines.",
@@ -1142,6 +1146,7 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "pattern": {"type": "string"},
         "glob": {"type": "string"},
         "context": {"type": ["integer", "null"]},
+        "ignore_case": {"type": "boolean"},
         "old": {"type": "string"},
         "new": {"type": "string"},
         "content": {"type": "string"},
