@@ -60,11 +60,13 @@ MAX_READ_LINES = 2000
 HEAD_LINES = 200
 
 #: Hard ceiling on what any single tool may return, in characters (F-25).
-#: About 4k tokens: large enough to read a substantial file in one go, small
-#: enough that four such results still fit beside the schema and the prompt in
-#: a 16k window. A tool result that would blow the window is not a bigger
-#: answer, it is a 400 and no answer at all.
-MAX_TOOL_PAYLOAD_CHARS = 12000
+#: Raised 12000 -> 20000 with the window (F-32). The old value was sized
+#: against a 16k context; that is 32k since F-28 and this was never
+#: revisited. A truncated read now hands back 10k instead of 6k, nearly
+#: halving the calls needed to cross a large file -- which is what an agent
+#: spent twenty-four of forty turns doing. A tool result that would blow the
+#: window is not a bigger answer, it is a 400 and no answer at all.
+MAX_TOOL_PAYLOAD_CHARS = 20000
 MAX_GREP_HITS = 50
 TEST_TIMEOUT_SECONDS = 120.0
 TEST_OUTPUT_TAIL = 3000
@@ -318,10 +320,22 @@ def read_file(ctx: ToolContext, path: Any, start: Any = None, end: Any = None) -
     return body
 
 
-def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py") -> Any:
+def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py", context: Any = 0) -> Any:
+    """Search the repository, optionally returning lines around each hit.
+
+    ``context`` (F-33) is the difference between one call and two. Without it,
+    finding a symbol means grep to learn the line number and then read_file to
+    see the code, and the read returns a whole window of mostly irrelevant
+    lines. The measured cost was real: an agent looking for one function in a
+    48k-character file spent twenty-four of its forty turns reading.
+    """
     if not isinstance(pattern, str):
         raise InvalidCall(ERROR_BAD_ARGUMENTS, "pattern debe ser una cadena")
     glob = glob if isinstance(glob, str) and glob else "**/*.py"
+    if context is None:
+        context = 0
+    if not isinstance(context, int) or isinstance(context, bool) or not 0 <= context <= 20:
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "context debe ser un entero entre 0 y 20")
     try:
         rx = re.compile(pattern)
     except re.error as exc:
@@ -329,11 +343,13 @@ def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py") -> Any:
 
     hits: list[dict] = []
     truncated = False
+    budget = MAX_TOOL_PAYLOAD_CHARS
+    spent = 0
     try:
         candidates = sorted(ctx.root.glob(glob))
     except (OSError, ValueError, IndexError) as exc:
         # An invalid glob (e.g. "**") is the model's mistake, not a crash.
-        raise ToolError(ERROR_BAD_PATTERN, f"glob {glob!r} inválido: {exc}") from None
+        raise ToolError(ERROR_BAD_PATTERN, f"glob {glob!r} invalido: {exc}") from None
 
     for p in candidates:
         if any(part in SKIP_DIRS for part in p.parts):
@@ -345,17 +361,30 @@ def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py") -> Any:
         except (UnicodeDecodeError, OSError):
             continue  # a binary or unreadable file is not a grep failure
         rel = p.relative_to(ctx.root).as_posix()
-        for i, line in enumerate(text.splitlines(), 1):
-            if rx.search(line):
-                if len(hits) >= MAX_GREP_HITS:
-                    truncated = True
-                    break
-                hits.append({"file": rel, "line": i, "text": line[:400]})
+        lines = text.splitlines()
+        for i, line in enumerate(lines, 1):
+            if not rx.search(line):
+                continue
+            if len(hits) >= MAX_GREP_HITS or spent >= budget:
+                truncated = True
+                break
+            hit: dict = {"file": rel, "line": i, "text": line[:400]}
+            if context:
+                lo = max(1, i - context)
+                hi = min(len(lines), i + context)
+                block = "\n".join(f"{n:4}\t{lines[n - 1]}" for n in range(lo, hi + 1))
+                hit["context"] = block[: budget - spent]
+                spent += len(hit["context"])
+            spent += len(hit["text"])
+            hits.append(hit)
         if truncated:
             break
 
     if truncated:
-        return {"hits": hits, "note": f"[más de {MAX_GREP_HITS} coincidencias, mostrando {MAX_GREP_HITS}. Afina el patrón o restringe el glob]"}
+        return {"hits": hits, "note": (
+            f"[resultado recortado en {len(hits)} coincidencias. Afina el patron, "
+            f"restringe el glob, o baja context]"
+        )}
     if not hits:
         return {"hits": [], "note": f"[0 coincidencias para {pattern!r} en {glob!r}]"}
     return {"hits": hits}
@@ -861,7 +890,7 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
 SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "read_file": (("path",), ("start", "end")),
     "list_dir": ((), ("path",)),
-    "grep": (("pattern",), ("glob",)),
+    "grep": (("pattern",), ("glob", "context")),
     "list_symbols": (("path",), ()),
     "edit": (("path", "old", "new"), ()),
     "replace_lines": (("path", "start", "end", "content"), ()),
@@ -1010,7 +1039,9 @@ TOOL_DOC: dict[str, str] = {
     "grep": (
         "Busca una expresion regular de Python en los ficheros del repositorio y "
         "devuelve fichero, linea y texto de cada coincidencia. Es la forma de "
-        "encontrar donde se define o se usa algo cuando no sabes en que fichero esta."
+        "encontrar donde se define o se usa algo cuando no sabes en que fichero "
+        "esta. Con context=N te devuelve ademas N lineas antes y despues de cada "
+        "coincidencia, asi que muchas veces te ahorra el read_file siguiente."
     ),
     "list_symbols": (
         "Devuelve las funciones y clases definidas en un fichero Python, con su "
@@ -1068,6 +1099,7 @@ PARAM_DOC: dict[str, str] = {
     "end": "Ultima linea, incluida. En read_file, null lee hasta el final.",
     "pattern": "Expresion regular de Python. Se busca linea a linea.",
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
+    "context": "Lineas de contexto alrededor de cada coincidencia (0-20). 0 solo da la linea.",
     "old": "El texto exacto que hay ahora en el fichero, incluida su indentacion. Debe ser unico.",
     "new": "El texto que lo sustituye. Cadena vacia para borrar el fragmento.",
     "content": "Contenido nuevo: el fichero entero en write_file, o el texto que sustituye al rango en replace_lines.",
@@ -1109,6 +1141,7 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "end": {"type": ["integer", "null"]},
         "pattern": {"type": "string"},
         "glob": {"type": "string"},
+        "context": {"type": ["integer", "null"]},
         "old": {"type": "string"},
         "new": {"type": "string"},
         "content": {"type": "string"},

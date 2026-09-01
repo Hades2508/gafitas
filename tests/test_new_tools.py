@@ -439,3 +439,45 @@ def test_the_nearest_hint_is_omitted_when_nothing_is_close(ctx):
     out = call(ctx, "edit", path="pkg/mod.py", old="zzzzzz_qqqqq_wwwww", new="x")
     assert not out.ok and out.code == errors.ERROR_NO_MATCH
     assert "read_file" in out.feedback
+
+
+# ------------------------------------------------------- F-33: grep context
+
+
+def test_grep_returns_surrounding_lines_when_asked(ctx):
+    """One call instead of two. An agent looking for one function in a 48k
+    file spent 24 of its 40 turns on read_file, because grep told it where the
+    code was and nothing about what the code said."""
+    out = call(ctx, "grep", pattern="def double", glob="**/*.py", context=2)
+    assert out.ok
+    hit = out.value["hits"][0]
+    assert "context" in hit
+    assert "return n * 2" in hit["context"], "the body, not just the signature"
+    assert "\t" in hit["context"], "numbered, so it can be fed straight to replace_lines"
+
+
+def test_grep_without_context_is_unchanged(ctx):
+    out = call(ctx, "grep", pattern="def double", glob="**/*.py")
+    assert out.ok and "context" not in out.value["hits"][0]
+
+
+def test_grep_context_is_bounded(ctx, repo):
+    """Context multiplies output by 2N+1, so it needs its own ceiling or it
+    becomes the very thing that blew the window in F-25."""
+    body = "\n".join(f"def f{i}():\n    return {i}" for i in range(400))
+    (repo / "pkg" / "many.py").write_text(body, encoding="utf-8")
+    out = call(ctx, "grep", pattern="return", glob="pkg/many.py", context=20)
+    assert out.ok
+    size = sum(len(h.get("context", "")) + len(h["text"]) for h in out.value["hits"])
+    assert size <= tools.MAX_TOOL_PAYLOAD_CHARS * 1.1
+
+
+def test_grep_rejects_an_absurd_context(ctx):
+    assert call(ctx, "grep", pattern="x", context=999).invalid_call
+    assert call(ctx, "grep", pattern="x", context="two").invalid_call
+
+
+def test_grep_context_null_is_accepted(ctx):
+    """Providers send null for an omitted optional argument."""
+    out = call(ctx, "grep", pattern="def double", context=None)
+    assert out.ok
