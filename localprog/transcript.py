@@ -110,6 +110,13 @@ class Transcript:
                 if not recent and not turn.is_error and len(payload) > self.elide_over_chars:
                     payload = self._placeholder(turn)
                     self.elisions += 1
+                if len(payload) > MAX_PAYLOAD_CHARS:
+                    payload = (
+                        payload[:MAX_PAYLOAD_CHARS]
+                        + f"\n[... resultado recortado a {MAX_PAYLOAD_CHARS} caracteres. "
+                        f"Pide un tramo mas pequeno.]"
+                    )
+                    self.elisions += 1
                 payload_message = {"role": "tool", "name": turn.tool_name, "content": payload}
             rendered.append((turn.number, assistant, payload_message))
 
@@ -202,6 +209,14 @@ CONTEXT_FRACTION = 0.55
 #: A tool-call ARGUMENT longer than this is summarised once it is old. The call
 #: itself -- name, and the shape of its arguments -- is never removed.
 ARGUMENT_ELIDE_OVER_CHARS = 400
+
+#: Absolute ceiling on any single tool payload, applied even to the most recent
+#: turn (F-25). The budget's hard floor deliberately never elides recent turns,
+#: which leaves one oversized result unbounded -- and one is enough to exceed
+#: the window and get the whole request rejected. Tools cap themselves too; this
+#: is the backstop for the tool that forgets, or for a payload assembled from
+#: several tools' worth of text.
+MAX_PAYLOAD_CHARS = 14000
 
 
 def budget_chars(num_ctx: int) -> int:

@@ -55,6 +55,13 @@ from .errors import (
 
 MAX_READ_LINES = 2000
 HEAD_LINES = 200
+
+#: Hard ceiling on what any single tool may return, in characters (F-25).
+#: About 4k tokens: large enough to read a substantial file in one go, small
+#: enough that four such results still fit beside the schema and the prompt in
+#: a 16k window. A tool result that would blow the window is not a bigger
+#: answer, it is a 400 and no answer at all.
+MAX_TOOL_PAYLOAD_CHARS = 12000
 MAX_GREP_HITS = 50
 TEST_TIMEOUT_SECONDS = 120.0
 TEST_OUTPUT_TAIL = 3000
@@ -269,15 +276,28 @@ def _check_writable(ctx: ToolContext, rel: str, *, creating: bool) -> None:
 
 def read_file(ctx: ToolContext, path: Any, start: Any = None, end: Any = None) -> str:
     rel, target = _resolve(ctx, path)
-    lines = _read_text(rel, target).splitlines()
+    text = _read_text(rel, target)
+    lines = text.splitlines()
     total = len(lines)
 
-    if start is None and end is None and total > MAX_READ_LINES:
-        body = "\n".join(f"{i:4}\t{l}" for i, l in enumerate(lines[:HEAD_LINES], 1))
+    # F-25: too many lines OR too many characters. The second condition is the
+    # one that matters and the one that was missing: localprog/tools.py is about
+    # a thousand lines and 48k characters, which is more than a 16k-token window
+    # can hold. Reading it returned a 400 and ended the run on turn 2.
+    if start is None and end is None and (total > MAX_READ_LINES or len(text) > MAX_TOOL_PAYLOAD_CHARS):
+        shown = []
+        size = 0
+        for i, line in enumerate(lines[:MAX_READ_LINES], 1):
+            entry = f"{i:4}\t{line}"
+            if size + len(entry) > MAX_TOOL_PAYLOAD_CHARS // 2:
+                break
+            shown.append(entry)
+            size += len(entry) + 1
         return (
-            body
-            + f"\n[fichero de {total} líneas truncado. Usa start/end, o "
-            f"list_symbols('{rel}') para ver su estructura]"
+            "\n".join(shown)
+            + f"\n[fichero de {total} lineas / {len(text)} caracteres, truncado en la "
+            f"linea {len(shown)}. Usa read_file('{rel}', start=..., end=...) para leer "
+            f"otro tramo, o list_symbols('{rel}') para ver su estructura primero]"
         )
 
     lo = 1 if start is None else start
@@ -288,7 +308,11 @@ def read_file(ctx: ToolContext, path: Any, start: Any = None, end: Any = None) -
     hi = min(total, hi)
     if lo > hi or total == 0:
         return f"[rango vacío: el fichero tiene {total} líneas]"
-    return "\n".join(f"{i:4}\t{lines[i - 1]}" for i in range(lo, hi + 1))
+    body = "\n".join(f"{i:4}\t{lines[i - 1]}" for i in range(lo, hi + 1))
+    if len(body) > MAX_TOOL_PAYLOAD_CHARS:
+        body = (body[:MAX_TOOL_PAYLOAD_CHARS]
+                + f"\n[truncado a {MAX_TOOL_PAYLOAD_CHARS} caracteres; pide un rango mas corto]")
+    return body
 
 
 def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py") -> Any:

@@ -99,7 +99,13 @@ class OllamaProvider:
                 detail = exc.read().decode("utf-8", errors="replace")[:500]
             except Exception:  # noqa: BLE001 - the status is the useful part
                 pass
-            raise ProviderError("HTTP_STATUS", f"{exc.code} {exc.reason}: {detail}", status=exc.code) from None
+            # A context overflow is OUR defect, not the server's and not the
+            # model's, so it gets a name of its own instead of hiding among
+            # ordinary HTTP failures. It stays a ProviderError -- and therefore
+            # stays unscoreable -- because scoring the model for a prompt this
+            # harness built too large would be exactly backwards.
+            kind = "CONTEXT_OVERFLOW" if "exceed_context_size" in detail else "HTTP_STATUS"
+            raise ProviderError(kind, f"{exc.code} {exc.reason}: {detail}", status=exc.code) from None
         except socket.timeout:
             raise ProviderError("TIMEOUT", f"sin respuesta en {self.timeout:g}s") from None
         except urllib.error.URLError as exc:

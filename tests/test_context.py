@@ -340,3 +340,81 @@ def test_step1_refuses_a_mission_whose_acceptance_already_passes(tmp_path):
     assert record.discriminating is False
     assert record.tester_pass is None
     assert provider.calls == []
+
+
+# ------------------------------------------------------------------ F-25
+
+
+def test_reading_a_very_large_file_cannot_blow_the_context_window(tmp_path):
+    """Found by dogfooding. The agent was asked to add an argument to grep, its
+    first move was to read the file that defines it, and localprog/tools.py is
+    48k characters against a 16k-token window. Turn 2 came back 400
+    exceed_context_size_error. The agent did nothing wrong."""
+    big = "\n".join(f"# {'x' * 300}" for _ in range(400))
+    (tmp_path / "big.py").write_text(big, encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_file", {"path": "big.py"})
+    assert out.ok
+    assert len(out.value) <= tools.MAX_TOOL_PAYLOAD_CHARS
+    assert "truncado" in out.value
+    assert "start=" in out.value, "must say how to read the rest"
+
+
+def test_a_file_under_the_line_limit_but_over_the_character_limit_is_still_capped(tmp_path):
+    """Lines were the only limit, and for source with long lines they are a bad
+    proxy: under 2000 lines and still far too big."""
+    body = "\n".join("y" * 2000 for _ in range(30))
+    (tmp_path / "wide.py").write_text(body, encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_file", {"path": "wide.py"})
+    assert out.ok and len(out.value) <= tools.MAX_TOOL_PAYLOAD_CHARS
+
+
+def test_an_explicit_range_is_capped_too(tmp_path):
+    body = "\n".join("z" * 2000 for _ in range(40))
+    (tmp_path / "wide.py").write_text(body, encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_file", {"path": "wide.py", "start": 1, "end": 40})
+    assert out.ok and len(out.value) <= tools.MAX_TOOL_PAYLOAD_CHARS + 200
+
+
+def test_a_small_file_is_returned_whole(tmp_path):
+    (tmp_path / "small.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_file", {"path": "small.py"})
+    assert out.ok and "truncado" not in out.value and "return 1" in out.value
+
+
+def test_the_transcript_caps_even_the_most_recent_payload():
+    """The budget's hard floor never elides recent turns -- which is right, and
+    which leaves exactly one oversized recent result unbounded. One is enough."""
+    t = transcript.Transcript(system="S", user="U", keep_turns=3, budget_chars=100_000)
+    t.add(transcript.Turn(
+        number=1, assistant={"role": "assistant", "content": ""},
+        tool_name="read_file", tool_payload="Q" * 200_000,
+    ))
+    tool_message = [m for m in t.messages() if m.get("role") == "tool"][0]
+    assert len(tool_message["content"]) <= transcript.MAX_PAYLOAD_CHARS + 200
+    assert "recortado" in tool_message["content"]
+
+
+def test_a_context_overflow_is_named_and_never_scored():
+    """It is the harness's defect -- we built the prompt -- so it must not be
+    charged to the model. It stays a ProviderError, which is unscoreable."""
+    import urllib.error
+    from unittest.mock import patch as mock_patch
+
+    from localprog.errors import ProviderError
+    from localprog.provider import OllamaProvider
+
+    body = b'{"error":"exceed_context_size_error: request (16877 tokens)"}'
+    error = urllib.error.HTTPError("u", 400, "Bad Request", {}, None)
+    error.read = lambda: body  # type: ignore[method-assign]
+
+    with mock_patch("urllib.request.urlopen", side_effect=error):
+        with pytest.raises(ProviderError) as excinfo:
+            OllamaProvider("m").chat([{"role": "user", "content": "x"}])
+    assert excinfo.value.kind == "CONTEXT_OVERFLOW"
+
+    result = loop.LoopResult(outcome=loop.PROVIDER_ERROR)
+    assert result.scoreable is False

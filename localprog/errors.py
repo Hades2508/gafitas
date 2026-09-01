@@ -87,7 +87,14 @@ class ProviderError(LocalProgError):
         TRANSPORT     the connection itself failed (refused, reset, DNS)
     """
 
-    KINDS = ("HTTP_STATUS", "TIMEOUT", "BAD_BODY", "TRANSPORT")
+    KINDS = (
+        "HTTP_STATUS", "TIMEOUT", "BAD_BODY", "TRANSPORT",
+        # Our prompt was larger than the window we asked for. The server is
+        # healthy and the model never saw the request, so it lives here --
+        # where it is unscoreable -- rather than anywhere it could be
+        # charged to the model for a prompt this harness built (F-25).
+        "CONTEXT_OVERFLOW",
+    )
 
     def __init__(self, kind: str, detail: str, *, status: int | None = None) -> None:
         if kind not in self.KINDS:
