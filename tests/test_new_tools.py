@@ -366,3 +366,75 @@ def test_normalisation_never_opens_a_hole_in_containment(ctx, escape):
     out = call(ctx, "read_file", path=escape)
     assert not out.ok
     assert out.code in (errors.ERROR_PATH_OUTSIDE_REPO, errors.ERROR_FILE_NOT_FOUND)
+
+
+# ------------------------------------------------- F-26/F-27: editing at scale
+
+
+def test_replace_lines_replaces_a_range(ctx):
+    out = call(ctx, "replace_lines", path="pkg/mod.py", start=1, end=2,
+               content="def double(n):\n    return n + n")
+    assert out.ok, out.feedback
+    assert (ctx.root / "pkg" / "mod.py").read_text(encoding="utf-8") == "def double(n):\n    return n + n\n"
+
+
+def test_replace_lines_needs_no_exact_text(ctx, repo):
+    """The whole reason it exists. The dogfood run failed six times running
+    because edit needs the old bytes reproduced exactly, and on a 48k-character
+    file the read that showed them had already been elided. Line numbers come
+    free with read_file and list_symbols and survive elision."""
+    body = "\n".join(f"LINE{i}" for i in range(1, 101)) + "\n"
+    (repo / "pkg" / "long.py").write_text(body, encoding="utf-8")
+    out = call(ctx, "replace_lines", path="pkg/long.py", start=50, end=50, content="CAMBIADA")
+    assert out.ok
+    lines = (repo / "pkg" / "long.py").read_text(encoding="utf-8").splitlines()
+    assert lines[48] == "LINE49" and lines[49] == "CAMBIADA" and lines[50] == "LINE51"
+    assert len(lines) == 100
+
+
+def test_replace_lines_refuses_to_break_syntax(ctx):
+    before = (ctx.root / "pkg" / "mod.py").read_text(encoding="utf-8")
+    out = call(ctx, "replace_lines", path="pkg/mod.py", start=1, end=1, content="def broken(")
+    assert not out.ok and out.code == errors.ERROR_SYNTAX_AFTER_EDIT
+    assert (ctx.root / "pkg" / "mod.py").read_text(encoding="utf-8") == before
+
+
+def test_replace_lines_respects_write_scope(ctx):
+    out = call(ctx, "replace_lines", path="tests/test_mod.py", start=1, end=1, content="# no")
+    assert not out.ok and out.code == errors.ERROR_NOT_IN_WRITE_SCOPE
+
+
+def test_replace_lines_rejects_an_impossible_range(ctx):
+    out = call(ctx, "replace_lines", path="pkg/mod.py", start=999, end=1000, content="x = 1")
+    assert not out.ok and out.code == errors.ERROR_BAD_RANGE
+    assert "2 lineas" in out.feedback or "lineas" in out.feedback
+
+
+def test_replace_lines_rejects_non_integer_lines(ctx):
+    out = call(ctx, "replace_lines", path="pkg/mod.py", start="1", end=2, content="x = 1")
+    assert not out.ok and out.invalid_call
+
+
+def test_replace_lines_clamps_an_end_past_the_file(ctx):
+    out = call(ctx, "replace_lines", path="pkg/mod.py", start=1, end=9999,
+               content="def double(n):\n    return 0")
+    assert out.ok
+    assert (ctx.root / "pkg" / "mod.py").read_text(encoding="utf-8").endswith("return 0\n")
+
+
+def test_a_failed_edit_shows_the_text_as_it_actually_is(ctx):
+    """F-27. 'Not found, go read the file' was the advice that produced the
+    read-guess-fail loop. Showing the nearest region makes a wrong indent
+    visible immediately."""
+    out = call(ctx, "edit", path="pkg/mod.py",
+               old="def double(n):\n        return n * 2", new="x")  # wrong indent
+    assert not out.ok and out.code == errors.ERROR_NO_MATCH
+    assert "return n * 2" in out.feedback, "must show the real text"
+    assert "replace_lines" in out.feedback, "must name the line-based way out"
+
+
+def test_the_nearest_hint_is_omitted_when_nothing_is_close(ctx):
+    """A confident pointer at unrelated code would be worse than none."""
+    out = call(ctx, "edit", path="pkg/mod.py", old="zzzzzz_qqqqq_wwwww", new="x")
+    assert not out.ok and out.code == errors.ERROR_NO_MATCH
+    assert "read_file" in out.feedback

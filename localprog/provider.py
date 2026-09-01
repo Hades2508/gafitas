@@ -29,7 +29,13 @@ DEFAULT_NUM_CTX = 8192          # contract §C.2: the only 100%-GPU rung measure
 #: follows deletes exactly the history a debugging loop needs. 16384 still fits
 #: the 4B-class models this is aimed at; models that do not fit degrade in
 #: speed, which is visible in usage.provider_seconds rather than silent.
-WORK_NUM_CTX = 16384
+#:
+#: Raised 16384 -> 32768 after the dogfood run spent its entire life pegged
+#: at the smaller ceiling (F-28). 16384 was inherited from the screen, whose
+#: constraint was keeping a 7B model wholly on 12 GB. For the 4B doing this
+#: work the KV cache at 32k is about 4.7 GB against 2.5 GB of weights, so
+#: 7.2 GB total -- comfortably inside the same 12 GB.
+WORK_NUM_CTX = 32768
 WORK_NUM_PREDICT = 2048
 DEFAULT_NUM_PREDICT = 1024
 DEFAULT_TIMEOUT = 120.0

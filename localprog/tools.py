@@ -18,6 +18,7 @@ so the harness names its own bug instead of scoring it as a model failure.
 from __future__ import annotations
 
 import ast
+import difflib
 import re
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from .scope import WriteScope
 from .errors import (
     ERROR_BAD_ARGUMENTS,
     ERROR_BAD_PATTERN,
+    ERROR_BAD_RANGE,
     ERROR_COMMAND_NOT_ALLOWED,
     ERROR_EMPTY_DIRECTORY,
     ERROR_EMPTY_OLD,
@@ -384,6 +386,35 @@ def list_symbols(ctx: ToolContext, path: Any) -> list[str]:
     return [f"{n} (línea {lineno[n]})" if n in lineno else n for n in names]
 
 
+def _nearest_region(text: str, old: str, width: int = 12) -> str:
+    """The part of *text* that most resembles *old*, for a failed edit (F-27).
+
+    "Not found, go and read the file" was the old advice, and it was the very
+    loop the agent was already trapped in: read, guess, fail, read again. What
+    it needed was to SEE the difference -- almost always an indent that is four
+    spaces instead of eight, or a line that has moved on since the read.
+    """
+    old_lines = [l for l in old.splitlines() if l.strip()]
+    if not old_lines:
+        return ""
+    lines = text.splitlines()
+    anchor = max(old_lines, key=len).strip()
+    best_index, best_score = None, 0.0
+    for i, line in enumerate(lines):
+        score = difflib.SequenceMatcher(None, anchor, line.strip()).ratio()
+        if score > best_score:
+            best_index, best_score = i, score
+    if best_index is None or best_score < 0.5:
+        return ""
+    lo = max(0, best_index - width // 2)
+    hi = min(len(lines), best_index + width // 2 + 1)
+    body = "\n".join(f"{n:4}\t{lines[n - 1]}" for n in range(lo + 1, hi + 1))
+    return (f"\n  Lo mas parecido esta por la linea {best_index + 1} "
+            f"(parecido {best_score:.0%}). Asi esta AHORA en el fichero:\n{body}\n"
+            f"  Copia el texto exacto de ahi (con su indentacion), o usa "
+            f"replace_lines('{{rel}}', start, end, content) con esos numeros de linea.")
+
+
 def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
     rel, target = _resolve(ctx, path)
     _check_writable(ctx, rel, creating=False)
@@ -396,11 +427,14 @@ def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
     count = text.count(old)
     if count == 0:
         preview = "\n".join("    " + l for l in old.splitlines()[:5])
+        hint = _nearest_region(text, old).replace("{rel}", rel)
         raise ToolError(
             ERROR_NO_MATCH,
-            f"no se encontró el texto en {rel!r}.\n  buscado ({len(old.splitlines())} líneas):\n{preview}\n"
-            f"  El fichero tiene {len(text.splitlines())} líneas. Usa read_file({rel!r}) para ver "
-            f"el texto exacto, incluida la indentación.",
+            f"no se encontro el texto en {rel!r}.\n  buscado ({len(old.splitlines())} lineas):\n"
+            f"{preview}\n  El fichero tiene {len(text.splitlines())} lineas." + (
+                hint or f"\n  Usa read_file({rel!r}, start=, end=) para ver el texto exacto, "
+                        f"incluida la indentacion."
+            ),
         )
     if count > 1:
         at = []
@@ -430,6 +464,76 @@ def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
     _write_text(target, candidate)
     ctx.changed_files.add(rel)
     return f"edit aplicada en {rel}"
+
+
+def replace_lines(ctx: ToolContext, path: Any, start: Any, end: Any, content: Any) -> str:
+    """Replace lines *start*..*end* (inclusive, 1-based) with *content*.
+
+    The companion to ``edit``, added because ``edit`` alone is unusable on a
+    large file inside a finite context (F-26). ``edit`` requires the old text
+    reproduced byte for byte; the only source for those bytes is a read whose
+    result is subject to elision, so on a 48k-character file the agent ends up
+    quoting from a document it was not allowed to keep. The dogfood run failed
+    six times running that way, re-reading between every attempt.
+
+    Line numbers do not have that problem. They come free with every read_file
+    and every list_symbols, they are four characters long so elision never
+    touches them, and they stay valid as long as nothing above them has moved.
+
+    ``edit`` is still the better tool when it works: matching text is
+    self-verifying, whereas a line number is only as good as the agent's memory
+    of what was on it. This is the fallback for when that self-verification is
+    not affordable -- so the two coexist rather than one replacing the other.
+
+    Same protections as ``edit``: write scope, and a Python file that would not
+    parse afterwards is refused with nothing written.
+    """
+    rel, target = _resolve(ctx, path)
+    _check_writable(ctx, rel, creating=False)
+    if not isinstance(content, str):
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "content debe ser una cadena")
+    for name, value in (("start", start), ("end", end)):
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise InvalidCall(ERROR_BAD_ARGUMENTS, f"{name} debe ser un entero (linea, empezando en 1)")
+
+    text = _read_text(rel, target)
+    lines = text.splitlines(keepends=True)
+    total = len(lines)
+    if start < 1 or end < start:
+        raise ToolError(
+            ERROR_BAD_RANGE,
+            f"rango invalido: start={start}, end={end}. start empieza en 1 y end debe ser >= start.",
+        )
+    if start > total:
+        raise ToolError(
+            ERROR_BAD_RANGE,
+            f"start={start} pero {rel!r} solo tiene {total} lineas. "
+            f"Para anadir al final usa start={total} y end={total}.",
+        )
+    stop = min(end, total)
+
+    body = content if content.endswith("\n") or not content else content + "\n"
+    candidate = "".join(lines[: start - 1]) + body + "".join(lines[stop:])
+
+    if rel.endswith(".py"):
+        try:
+            ast.parse(candidate)
+        except SyntaxError as exc:
+            raise ToolError(
+                ERROR_SYNTAX_AFTER_EDIT,
+                f"el reemplazo dejaria {rel!r} sin poder parsearse:\n"
+                f"  linea {exc.lineno}: {exc.msg}\n"
+                f"  NO se ha escrito nada. Comprueba la indentacion de content y que "
+                f"el rango {start}-{stop} empieza y acaba donde crees.",
+            ) from None
+        except ValueError as exc:
+            raise ToolError(ERROR_SYNTAX_AFTER_EDIT, f"{rel!r}: {exc}. NO se ha escrito nada.") from None
+
+    _write_text(target, candidate)
+    ctx.changed_files.add(rel)
+    replaced = stop - start + 1
+    written = body.count("\n")
+    return f"replace_lines: {rel} lineas {start}-{stop} ({replaced}) sustituidas por {written} lineas"
 
 
 def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
@@ -735,6 +839,7 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "grep": (("pattern",), ("glob",)),
     "list_symbols": (("path",), ()),
     "edit": (("path", "old", "new"), ()),
+    "replace_lines": (("path", "start", "end", "content"), ()),
     "write_file": (("path", "content"), ()),
     "run": (("argv",), ("timeout",)),
     "run_tests": ((), ("node_ids",)),
@@ -747,6 +852,7 @@ _IMPL = {
     "grep": grep,
     "list_symbols": list_symbols,
     "edit": edit,
+    "replace_lines": replace_lines,
     "write_file": write_file,
     "run": run,
     "run_tests": run_tests,
@@ -894,9 +1000,17 @@ TOOL_DOC: dict[str, str] = {
         "seria Python valido, no se escribe nada y te lo digo. Puedes hacer varias "
         "ediciones seguidas sobre el mismo fichero."
     ),
+    "replace_lines": (
+        "Sustituye un rango de lineas de un fichero por un texto nuevo. "
+        "Alternativa a edit cuando no puedes reproducir el texto original "
+        "exactamente: aqui solo necesitas los numeros de linea, que te dan "
+        "read_file y list_symbols. Las lineas se cuentan desde 1 y el rango "
+        "incluye start y end. Cuidado: si editas antes, los numeros de despues "
+        "se desplazan; vuelve a leer si tienes dudas."
+    ),
     "write_file": (
         "Crea un fichero NUEVO con el contenido dado. Falla si el fichero ya "
-        "existe: para modificar uno existente usa edit."
+        "existe: para modificar uno existente usa edit o replace_lines."
     ),
     "run": (
         "Ejecuta un comando y devuelve su codigo de salida y su salida combinada. "
@@ -924,13 +1038,14 @@ TOOL_DOC: dict[str, str] = {
 #: is not stated is a parameter the model has to guess.
 PARAM_DOC: dict[str, str] = {
     "path": "Ruta relativa a la raiz del repositorio, con barras normales: 'pkg/mod.py'.",
-    "start": "Primera linea a leer, empezando en 1. null para leer desde el principio.",
-    "end": "Ultima linea a leer, incluida. null para leer hasta el final.",
+    "start": "Primera linea, empezando en 1. En read_file, null lee desde el principio.",
+    "end": "Ultima linea, incluida. En read_file, null lee hasta el final.",
     "pattern": "Expresion regular de Python. Se busca linea a linea.",
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
     "old": "El texto exacto que hay ahora en el fichero, incluida su indentacion. Debe ser unico.",
     "new": "El texto que lo sustituye. Cadena vacia para borrar el fragmento.",
-    "content": "Contenido completo del fichero nuevo.",
+    "content": "Contenido nuevo: el fichero entero en write_file, o el texto que sustituye al rango en replace_lines.",
+
     "argv": 'Comando como lista de cadenas: ["python", "-m", "pytest", "-x", "tests/test_a.py"].',
     "timeout": "Segundos maximos de ejecucion (1-600). null usa el limite por defecto.",
     "node_ids": "Lista de tests concretos, p.ej. ['tests/test_a.py::test_b']. null ejecuta los declarados.",

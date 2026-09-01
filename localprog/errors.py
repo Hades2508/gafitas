@@ -151,6 +151,8 @@ ERROR_NOTHING_CHANGED = "ERROR_NOTHING_CHANGED"
 #: ToolError and not an InvalidCall: reaching for ``npm`` is a reasonable
 #: thing for a model to try, and the refusal is a fact about this sandbox
 #: rather than a malformed call.
+#: replace_lines was given a line range that does not exist in the file.
+ERROR_BAD_RANGE = "ERROR_BAD_RANGE"
 ERROR_COMMAND_NOT_ALLOWED = "ERROR_COMMAND_NOT_ALLOWED"
 #: ``list_dir`` on a directory that exists and holds nothing. Kept distinct
 #: from ERROR_FILE_NOT_FOUND so the model does not go hunting for a typo it
@@ -174,6 +176,7 @@ TOOL_ERROR_CODES = frozenset({
     ERROR_NOT_IN_WRITE_SCOPE,
     ERROR_FILE_EXISTS,
     ERROR_NOTHING_CHANGED,
+    ERROR_BAD_RANGE,
     ERROR_COMMAND_NOT_ALLOWED,
     ERROR_EMPTY_DIRECTORY,
     ERROR_TOO_MANY_ENTRIES,

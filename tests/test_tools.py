@@ -137,9 +137,17 @@ def test_two_edits_to_one_file_both_survive(ctx, repo):
 
 
 def test_edit_no_match_explains_how_to_recover(ctx):
+    """A failed edit must leave the agent able to act, not just informed.
+
+    Rewritten for F-27. The message used to say the text was not found and to
+    go read the file -- which was exactly the loop the dogfood run was already
+    trapped in: read, guess, fail, read again, six times. It now shows the
+    nearest region as it actually stands, and names the line-based alternative.
+    """
     out = call(ctx, "edit", path="calc.py", old="return a // b", new="x")
     assert not out.ok and out.code == errors.ERROR_NO_MATCH
-    assert "read_file" in out.feedback and "indentación" in out.feedback
+    assert "indentacion" in out.feedback
+    assert "read_file" in out.feedback or "replace_lines" in out.feedback
 
 
 def test_edit_multiple_matches_lists_lines(ctx):
