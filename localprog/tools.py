@@ -381,6 +381,7 @@ def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py", context: Any = 0
     truncated = False
     budget = MAX_TOOL_PAYLOAD_CHARS
     spent = 0
+    searched = 0
     try:
         candidates = sorted(ctx.root.glob(glob))
     except (OSError, ValueError, IndexError) as exc:
@@ -398,6 +399,7 @@ def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py", context: Any = 0
             continue  # a binary or unreadable file is not a grep failure
         rel = p.relative_to(ctx.root).as_posix()
         lines = text.splitlines()
+        searched += 1
         for i, line in enumerate(lines, 1):
             if not rx.search(line):
                 continue
@@ -422,8 +424,8 @@ def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py", context: Any = 0
             f"restringe el glob, o baja context]"
         )}
     if not hits:
-        return {"hits": [], "note": f"[0 coincidencias para {pattern!r} en {glob!r}]"}
-    return {"hits": hits}
+        return {"hits": [], "note": f"[0 coincidencias para {pattern!r} en {glob!r} (buscado en {searched} archivos). Se buscaron {searched} ficheros.]", "searched": searched}
+    return {"hits": hits, "searched": searched}
 
 
 def list_symbols(ctx: ToolContext, path: Any) -> list[str]:
