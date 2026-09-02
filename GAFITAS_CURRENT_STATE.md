@@ -4,7 +4,7 @@ Single operational state file. If you come back to this in a week, read only
 this.
 
 **Canonical root:** `D:\LOCAL-PROGRAMMER-ROOT`, package `localprog`.
-**Suite:** 368 tests green (one module xfail — see UNSUPPORTED below).
+**Suite:** 457 tests green (two xfail-marked UNSUPPORTED cases — see below).
 
 ```bash
 python -m localprog work --out <DIR> --tier LOCAL --model qwen3:4b-instruct-2507-q4_K_M --local-attempts 3 --tickets <t.json>
@@ -21,7 +21,25 @@ default and must be typed on purpose.
 |---|---|---|
 | Final battery — 5 **new** discriminating tickets | **5/5** | **0** |
 | Benchmark corpus, free ladder | 7/8 | **0** |
-| Local self-maintenance (DOGFOOD-04, -05) | **2/2** | **0** |
+| Local self-maintenance (DOGFOOD-04, -05, **-07**) | **3/3** | **0** |
+
+## RETRIEVAL (2026-09-03)
+
+The agent could not search by meaning, only by literal regex, and it was the
+dominant loss in everything that needed to find code. `search_code` — a BM25
+index over declaration regions, language-agnostic, stdlib, 0.3 s to build —
+plus navigation memory and honest tool feedback.
+
+| RepoQA GAFITAS_AGENT, official evaluator | before | after |
+|---|---|---|
+| python (development set) | 19.00% | **47.00%** |
+| **typescript (holdout, frozen before any change)** | 17.00% | **51.00%** |
+
+`p = 1.4e-07` on the holdout, paired. Cheaper as well: 19.0M → 11.1M input
+tokens, 48.6 → 34.6 min. Ablation: removing only `search_code` drops python
+from 44% to 22%, so the organ is the cause and not the surrounding fixes.
+
+Full account: `D:\GATE-A-WS\GAFITAS_EXTERNAL_BENCHMARKS\REPOQA\RETRIEVAL_RECOVERY_REPORT.md`
 
 ---
 
@@ -34,7 +52,8 @@ default and must be typed on purpose.
 | create a module from a spec | fin03 PASS, 10 turns · ga08, ga06 |
 | debugging (two distinct faults) | fin04 PASS · dbg01 |
 | modify tests | fin05 PASS · tests01 |
-| search / trace before editing | every run opens with list_dir/grep |
+| search / trace before editing | `search_code`: RepoQA agent 19% → 47% python, 17% → 51% typescript holdout |
+| finding a symbol nobody named | DOGFOOD-07: the objective says "la herramienta que lista un directorio", the agent finds `tools.py::list_dir` among twelve |
 | first attempt fails → recovers | fin02, fin05, DOGFOOD-04/05 all passed on attempt 2–3 |
 | **self-maintenance** | **DOGFOOD-04 and DOGFOOD-05, written by the 4B, committed** |
 
@@ -44,6 +63,7 @@ default and must be typed on purpose.
 |---|---|
 | subtle multi-site logic in a very large module | DOGFOOD-03: 13 free attempts, every one 4–5 of 11 |
 | a 16-requirement module from one written spec | ga04: 5 free attempts, always 13–14 of 16 |
+| a feature whose condition has two halves | DOGFOOD-06: 3 attempts here and 3 on the pre-change code, every one 2 of 3 — it adds the note unconditionally or not at all |
 
 These stay `UNSUPPORTED`. That is the honest answer, and it is better than a
 silent dependency on somebody's API.
