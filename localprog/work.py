@@ -73,6 +73,9 @@ COMO TRABAJAR
 
 1. ORIENTATE. Si no conoces el repositorio, empieza por list_dir y grep. No
    adivines nombres de ficheros.
+   En un fichero GRANDE no lo leas entero: list_symbols te dice que hay dentro
+   y read_symbol te da una funcion o clase concreta con sus lineas. Leer el
+   mismo fichero una y otra vez gasta turnos y no averigua nada nuevo.
 2. LEE ANTES DE EDITAR. edit necesita el texto EXACTO que hay ahora, con su
    indentacion. Leelo con read_file y copialo.
 3. EJECUTA PARA VER. run te deja reproducir un fallo, imprimir un valor o
@@ -551,6 +554,16 @@ def _seal(out_dir: Path | None, ticket: Ticket, result: WorkResult,
     target = Path(out_dir) / "tickets"
     target.mkdir(parents=True, exist_ok=True)
     stem = f"{ticket.ticket_id}_{result.model.replace('/', '_').replace(':', '_')}"
+    # F-49: since F-48 a tier may be retried, and every attempt used to seal to
+    # the same filename -- so three local attempts left one file and the first
+    # two vanished. Losing the evidence of the attempts that FAILED is exactly
+    # backwards: those are the ones worth reading, and experiments.md forbids a
+    # failure destroying its own record.
+    if (target / f"{stem}.json").exists():
+        attempt = 2
+        while (target / f"{stem}__try{attempt}.json").exists():
+            attempt += 1
+        stem = f"{stem}__try{attempt}"
     (target / f"{stem}.json").write_text(
         json.dumps(
             {"provenance": deps.provenance(), "record": result.to_dict(), "events": events},

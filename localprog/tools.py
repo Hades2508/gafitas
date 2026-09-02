@@ -333,8 +333,10 @@ def read_file(ctx: ToolContext, path: Any, start: Any = None, end: Any = None) -
         return (
             "\n".join(shown)
             + f"\n[fichero de {total} lineas / {len(text)} caracteres, truncado en la "
-            f"linea {len(shown)}. Usa read_file('{rel}', start=..., end=...) para leer "
-            f"otro tramo, o list_symbols('{rel}') para ver su estructura primero]"
+            f"linea {len(shown)}. Para mirar algo concreto NO hace falta leerlo "
+            f"entero: usa read_symbol('{rel}', '<nombre>') si sabes que buscas, "
+            f"list_symbols('{rel}') para ver que hay, o read_file('{rel}', "
+            f"start=, end=) para otro tramo]"
         )
 
     lo = 1 if start is None else start
@@ -504,6 +506,81 @@ def _nearest_region(text: str, old: str, width: int = 12) -> str:
             f"(parecido {best_score:.0%}). Asi esta AHORA en el fichero:\n{body}\n"
             f"  Copia el texto exacto de ahi (con su indentacion), o usa "
             f"replace_lines('{{rel}}', start, end, content) con esos numeros de linea.")
+
+
+def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
+    """The source of one function or class, by name (F-50).
+
+    Reading a named definition out of a large file is the commonest navigation
+    a programmer does, and it was three calls: list_symbols for the line
+    number, read_file with a guessed range, and usually another read because
+    the guess was short. Measured, both local models failed at it -- one spent
+    thirty of forty turns searching a file it had already identified and never
+    reached the tests.
+
+    ``name`` accepts "funcion" or "Clase.metodo". Line numbers are the file's
+    own, so the result feeds straight into replace_lines.
+    """
+    rel, target = _resolve(ctx, path)
+    if not isinstance(name, str) or not name.strip():
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "name debe ser el nombre de una funcion o clase")
+    name = name.strip()
+
+    source = _read_text(rel, target)
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise ToolError(ERROR_SYNTAX, f"{rel!r} linea {exc.lineno}: {exc.msg}") from None
+    except (ValueError, RecursionError) as exc:
+        raise ToolError(ERROR_SYNTAX, f"{rel!r}: {exc}") from None
+
+    found: dict[str, Any] = {}
+
+    def walk(node, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                dotted = child.name if not prefix else f"{prefix}.{child.name}"
+                found.setdefault(dotted, child)
+                walk(child, dotted)
+
+    walk(tree, "")
+
+    node = found.get(name)
+    if node is None:
+        # A bare method name is what a model usually types, and refusing it
+        # while knowing exactly which symbol was meant would be pedantry.
+        matches = [k for k in found if k.rsplit(".", 1)[-1] == name]
+        if len(matches) == 1:
+            node = found[matches[0]]
+            name = matches[0]
+        elif matches:
+            raise ToolError(
+                ERROR_NO_MATCH,
+                f"{name!r} es ambiguo en {rel!r}: {', '.join(sorted(matches))}. "
+                f"Usa el nombre completo.",
+            )
+        else:
+            near = ", ".join(sorted(found)[:20]) or "(ninguno)"
+            raise ToolError(
+                ERROR_NO_MATCH,
+                f"no hay ningun simbolo {name!r} en {rel!r}.\n  Hay estos: {near}"
+                + (" ..." if len(found) > 20 else ""),
+            )
+
+    # Decorators sit above the def and are part of what the symbol IS.
+    start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+    end = getattr(node, "end_lineno", None) or node.lineno
+    lines = source.splitlines()
+    end = min(end, len(lines))
+    body = "\n".join(f"{n:4}\t{lines[n - 1]}" for n in range(start, end + 1))
+    if len(body) > MAX_TOOL_PAYLOAD_CHARS:
+        kept = body[:MAX_TOOL_PAYLOAD_CHARS]
+        shown = kept.count(chr(10)) + 1
+        body = kept + (
+            f"\n[{name} ocupa las lineas {start}-{end}; te muestro hasta la "
+            f"{start + shown - 1}. Usa read_file('{rel}', start=, end=) para el resto]"
+        )
+    return f"{rel}::{name}  (lineas {start}-{end})\n{body}"
 
 
 def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
@@ -1112,6 +1189,7 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "list_dir": ((), ("path", "recursive")),
     "grep": (("pattern",), ("glob", "context", "ignore_case")),
     "list_symbols": (("path",), ()),
+    "read_symbol": (("path", "name"), ()),
     "edit": (("path", "old", "new"), ()),
     "replace_lines": (("path", "start", "end", "content"), ()),
     "write_file": (("path", "content"), ()),
@@ -1125,6 +1203,7 @@ _IMPL = {
     "list_dir": list_dir,
     "grep": grep,
     "list_symbols": list_symbols,
+    "read_symbol": read_symbol,
     "edit": edit,
     "replace_lines": replace_lines,
     "write_file": write_file,
@@ -1270,6 +1349,13 @@ TOOL_DOC: dict[str, str] = {
         "numero de linea, en forma 'Clase.metodo'. Mas barato que leer el fichero "
         "entero cuando solo quieres saber que hay dentro."
     ),
+    "read_symbol": (
+        "Devuelve el codigo de UNA funcion o clase por su nombre, con sus "
+        "numeros de linea reales. Es la forma barata de mirar algo concreto "
+        "dentro de un fichero grande: no tienes que adivinar el rango ni leerlo "
+        "entero. Acepta 'funcion' o 'Clase.metodo'. Los numeros de linea que "
+        "devuelve sirven tal cual para replace_lines."
+    ),
     "edit": (
         "Sustituye un fragmento de texto exacto por otro dentro de un fichero que "
         "ya existe. El fragmento 'old' debe aparecer EXACTAMENTE UNA VEZ en el "
@@ -1325,6 +1411,7 @@ PARAM_DOC: dict[str, str] = {
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
     "context": "Lineas de contexto alrededor de cada coincidencia (0-20). 0 solo da la linea.",
     "ignore_case": "Booleano; si es True, busca sin distinguir mayusculas y minusculas. Por defecto False.",
+    "name": "Nombre del simbolo: 'mi_funcion' o 'MiClase.mi_metodo'.",
     "old": "El texto exacto que hay ahora en el fichero, incluida su indentacion. Debe ser unico.",
     "new": "El texto que lo sustituye. Cadena vacia para borrar el fragmento.",
     "content": "Contenido nuevo: el fichero entero en write_file, o el texto que sustituye al rango en replace_lines.",
@@ -1372,6 +1459,7 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "old": {"type": "string"},
         "new": {"type": "string"},
         "content": {"type": "string"},
+        "name": {"type": "string"},
         "argv": {"type": "array", "items": {"type": "string"}},
         "timeout": {"type": ["number", "null"]},
         "node_ids": {"type": ["array", "null"], "items": {"type": "string"}},

@@ -24,8 +24,10 @@ from localprog import errors, tools  # noqa: E402
 from localprog.scope import WriteScope  # noqa: E402
 
 
-def call(ctx, name, **kwargs):
-    return tools.dispatch(ctx, name, kwargs)
+def call(ctx, tool, **kwargs):
+    # Named 'tool', not 'name': read_symbol takes a 'name' argument and a
+    # helper that also called its first parameter that could never pass it.
+    return tools.dispatch(ctx, tool, kwargs)
 
 
 @pytest.fixture
@@ -481,3 +483,104 @@ def test_grep_context_null_is_accepted(ctx):
     """Providers send null for an omitted optional argument."""
     out = call(ctx, "grep", pattern="def double", context=None)
     assert out.ok
+
+
+# ------------------------------------------------------------------ F-50
+
+
+def test_read_symbol_returns_one_function_with_real_line_numbers(ctx):
+    """Reading a named definition out of a large file was three calls --
+    list_symbols, read_file with a guessed range, and usually another read
+    because the guess was short. Measured, both local models failed to compose
+    it; one spent thirty of forty turns searching a file it had already found
+    and never reached the tests."""
+    out = call(ctx, "read_symbol", path="pkg/mod.py", name="double")
+    assert out.ok, out.feedback
+    assert "def double(n):" in out.value
+    assert "return n * 2" in out.value
+    assert "lineas 1-2" in out.value
+
+
+def test_read_symbol_line_numbers_feed_replace_lines(ctx):
+    """The two tools are meant to compose: find it, then change it."""
+    out = call(ctx, "read_symbol", path="pkg/mod.py", name="double")
+    assert "   1\t" in out.value and "   2\t" in out.value
+    assert call(ctx, "replace_lines", path="pkg/mod.py", start=1, end=2,
+                content="def double(n):\n    return n + n").ok
+
+
+def test_read_symbol_finds_a_method_by_dotted_name(ctx, repo):
+    (repo / "pkg" / "cls.py").write_text(
+        "class A:\n    def __init__(self):\n        self.x = 1\n\n"
+        "    def metodo(self):\n        return self.x\n",
+        encoding="utf-8",
+    )
+    out = call(ctx, "read_symbol", path="pkg/cls.py", name="A.metodo")
+    assert out.ok and "return self.x" in out.value
+    assert "def __init__" not in out.value, "only the method asked for"
+
+
+def test_read_symbol_accepts_a_bare_method_name_when_unambiguous(ctx, repo):
+    """Refusing a name we can resolve exactly would be pedantry."""
+    (repo / "pkg" / "cls.py").write_text(
+        "class A:\n    def solo(self):\n        return 1\n", encoding="utf-8"
+    )
+    out = call(ctx, "read_symbol", path="pkg/cls.py", name="solo")
+    assert out.ok and "return 1" in out.value
+
+
+def test_read_symbol_refuses_an_ambiguous_bare_name(ctx, repo):
+    (repo / "pkg" / "cls.py").write_text(
+        "class A:\n    def m(self):\n        return 1\n\n\n"
+        "class B:\n    def m(self):\n        return 2\n",
+        encoding="utf-8",
+    )
+    out = call(ctx, "read_symbol", path="pkg/cls.py", name="m")
+    assert not out.ok and out.code == errors.ERROR_NO_MATCH
+    assert "A.m" in out.feedback and "B.m" in out.feedback
+
+
+def test_read_symbol_includes_decorators(ctx, repo):
+    """A decorator is part of what the symbol is; a model editing the function
+    without seeing it would delete the decorator."""
+    (repo / "pkg" / "deco.py").write_text(
+        "import functools\n\n\n@functools.cache\ndef cached(n):\n    return n\n",
+        encoding="utf-8",
+    )
+    out = call(ctx, "read_symbol", path="pkg/deco.py", name="cached")
+    assert out.ok and "@functools.cache" in out.value
+
+
+def test_read_symbol_on_a_missing_name_lists_what_is_there(ctx):
+    out = call(ctx, "read_symbol", path="pkg/mod.py", name="triple")
+    assert not out.ok and out.code == errors.ERROR_NO_MATCH
+    assert "double" in out.feedback, "say what the file does contain"
+
+
+def test_read_symbol_on_a_broken_file_is_a_tool_error(ctx, repo):
+    (repo / "pkg" / "roto.py").write_text("def f(\n", encoding="utf-8")
+    out = call(ctx, "read_symbol", path="pkg/roto.py", name="f")
+    assert not out.ok and out.code == errors.ERROR_SYNTAX
+
+
+def test_read_symbol_output_is_bounded(ctx, repo):
+    body = "\n".join(f"    x{i} = {i}" for i in range(4000))
+    (repo / "pkg" / "huge.py").write_text(f"def enorme():\n{body}\n", encoding="utf-8")
+    out = call(ctx, "read_symbol", path="pkg/huge.py", name="enorme")
+    assert out.ok and len(out.value) <= tools.MAX_TOOL_PAYLOAD_CHARS + 400
+
+
+def test_read_symbol_rejects_an_empty_name(ctx):
+    assert call(ctx, "read_symbol", path="pkg/mod.py", name="  ").invalid_call
+
+
+def test_read_symbol_cannot_escape_the_repository(ctx):
+    out = call(ctx, "read_symbol", path="../outside.py", name="x")
+    assert not out.ok and out.code == errors.ERROR_PATH_OUTSIDE_REPO
+
+
+def test_a_truncated_read_points_at_the_cheap_route(ctx, repo):
+    big = "\n".join(f"# {'x' * 300}" for _ in range(400))
+    (repo / "pkg" / "big.py").write_text(big, encoding="utf-8")
+    out = call(ctx, "read_file", path="pkg/big.py")
+    assert out.ok and "read_symbol" in out.value

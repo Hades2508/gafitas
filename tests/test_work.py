@@ -721,3 +721,24 @@ def test_blocked_is_not_questioned_once_the_tests_are_green(repo, tmp_path):
     )
     assert result.finish_status == "BLOCKED"
     assert result.outcome == work.PASS_UNCONFIRMED
+
+
+def test_retried_attempts_do_not_overwrite_each_others_evidence(repo, tmp_path):
+    """F-49. Since F-48 a tier may be retried, and every attempt sealed to the
+    same filename -- so three local attempts left one file and the first two
+    vanished. The attempts that FAILED are the ones worth reading, and a
+    failure destroying its own record is what experiments.md forbids."""
+    out = tmp_path / "out"
+    for _ in range(3):
+        work.run_ticket(
+            ticket(repo), "fake",
+            provider_factory=scripted(
+                tc("edit", path="pkg/calc.py", old="n / 0", new="n / 9"),
+                tc("run_tests"),
+                tc("finish", summary="no", status="BLOCKED"),
+                tc("finish", summary="no", status="BLOCKED"),
+            ),
+            out_dir=out, base_dir=tmp_path,
+        )
+    sealed = sorted((out / "tickets").glob("T1_fake*.json"))
+    assert len(sealed) == 3, f"expected three sealed attempts, found {[p.name for p in sealed]}"
