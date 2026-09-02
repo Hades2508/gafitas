@@ -53,6 +53,25 @@ def test_the_keys_that_were_already_there_are_untouched(ctx):
     assert out.value["dirs"] == ["sub/"]
 
 
+def test_the_truncation_note_still_counts_what_it_showed(ctx, repo):
+    """Added after an audit, and for a reason worth writing down.
+
+    The first candidate passed every case above and, in passing, changed the
+    count of entries actually shown from dirs+files to dirs alone -- which
+    makes the listing announce ERROR_TOO_MANY_ENTRIES on any directory that
+    contains a file. Nothing in the acceptance covered that line and nothing in
+    the suite did either, so a real regression scored PASS. This is the hole,
+    closed.
+    """
+    for i in range(5):
+        (repo / "pkg" / f"extra{i}.py").write_text("k", encoding="utf-8")
+    out = tools.dispatch(ctx, "list_dir", {"path": "pkg"})
+    assert out.ok
+    assert "note" not in out.value or "TOO_MANY" not in out.value["note"], (
+        "nothing was truncated here, so nothing may claim it was"
+    )
+
+
 def test_the_total_survives_a_truncated_listing(tmp_path):
     """The case a caller cannot work around: the sizes it would have to add up
     are exactly the ones that were cut out of the response."""
