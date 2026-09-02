@@ -23,11 +23,12 @@ import re
 import subprocess
 import sys
 import traceback
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import deps
+from . import deps, retrieval
 from .scope import WriteScope
 from .errors import (
     ERROR_BAD_ARGUMENTS,
@@ -39,6 +40,7 @@ from .errors import (
     ERROR_FILE_EXISTS,
     ERROR_FILE_NOT_FOUND,
     ERROR_IS_DIRECTORY,
+    ERROR_LANGUAGE_UNSUPPORTED,
     ERROR_MISSING_ARGUMENT,
     ERROR_MULTIPLE_MATCHES,
     ERROR_NO_MATCH,
@@ -47,6 +49,8 @@ from .errors import (
     ERROR_NOT_VERIFIED,
     ERROR_NOTHING_CHANGED,
     ERROR_PATH_OUTSIDE_REPO,
+    ERROR_RESULT_TRUNCATED,
+    ERROR_SEARCH_SCOPE_EMPTY,
     ERROR_SYNTAX,
     ERROR_SYNTAX_AFTER_EDIT,
     ERROR_TOO_MANY_ENTRIES,
@@ -81,6 +85,16 @@ TEST_OUTPUT_TAIL = 9000
 SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules"}
 FINISH_STATUSES = ("DONE", "NO_CHANGE", "BLOCKED")
 MAX_DIR_ENTRIES = 200
+
+#: How many ranked candidates search_code returns by default (F-59). Fifteen
+#: is about 3k characters of path + declaration + preview: small enough to
+#: read in one turn, wide enough that offline the needle is inside it for
+#: 82 of 100 RepoQA python cases.
+SEARCH_DEFAULT_LIMIT = 15
+MAX_SEARCH_LIMIT = 50
+
+#: How many files a failed grep names when it reports where matches DO live.
+GREP_DISTRIBUTION_FILES = 12
 RUN_TIMEOUT_SECONDS = 120.0
 RUN_OUTPUT_TAIL = 4000
 
@@ -154,11 +168,20 @@ class ToolContext:
     last_failing_tests: list = field(default_factory=list)
     #: Whether a premature BLOCKED has already been questioned once.
     blocked_once: bool = False
+    #: Whether an empty-diff NO_CHANGE has already been questioned once (F-61).
+    no_change_once: bool = False
     #: Budget state, written by the loop each turn so finish can weigh
     #: 'I am stuck' against 'I have barely started'.
     turns_left: int | None = None
     max_turns_hint: int = 0
     _scope: WriteScope | None = field(default=None, repr=False)
+    #: Lazily built retrieval index, and the state of the tree it was built
+    #: from. Rebuilding on every call would cost a second per search on a
+    #: large repository; never rebuilding would serve results from a tree the
+    #: agent has since edited. Keyed on what the agent changed, which is the
+    #: only thing that can invalidate it inside one run.
+    _index: Any = field(default=None, repr=False)
+    _index_key: Any = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self._scope = WriteScope(tuple(self.write_scope), tuple(self.allowed_new_files))
@@ -172,6 +195,16 @@ class ToolContext:
         if self._scope is None:
             self._scope = WriteScope(tuple(self.write_scope), tuple(self.allowed_new_files))
         return self._scope
+
+    def index(self) -> "retrieval.Index":
+        """The retrieval index for this repository, built at most once per edit."""
+        key = frozenset(self.changed_files)
+        if self._index is None or self._index_key != key:
+            self._index = retrieval.Index(self.root, skip_dirs=frozenset(
+                retrieval.DEFAULT_SKIP_DIRS | SKIP_DIRS
+            ))
+            self._index_key = key
+        return self._index
 
     def guard(self):
         try:
@@ -419,18 +452,213 @@ def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py", context: Any = 0
             break
 
     if truncated:
-        return {"hits": hits, "note": (
-            f"[resultado recortado en {len(hits)} coincidencias. Afina el patron, "
-            f"restringe el glob, o baja context]"
+        # Where the REST of the matches are (F-59). Cutting at 50 and breaking
+        # out of the file loop means the agent sees only whatever sorted first
+        # and cannot tell whether that is the whole story or a tenth of it. The
+        # remaining count is one more cheap pass and turns a blind truncation
+        # into a distribution it can act on.
+        rest = _match_distribution(ctx, rx, candidates, seen=len(hits))
+        return {"hits": hits, "searched": searched, "note": (
+            f"[{ERROR_RESULT_TRUNCATED}: te muestro {len(hits)} de "
+            f"{rest['total']} coincidencias en {rest['files']} ficheros. "
+            f"Mas coincidencias en: {rest['summary']}. "
+            f"Afina el patron, restringe el glob, o baja context]"
         )}
     if not hits:
-        return {"hits": [], "note": f"[0 coincidencias para {pattern!r} en {glob!r} (buscado en {searched} archivos). Se buscaron {searched} ficheros.]", "searched": searched}
+        return {"hits": [], "searched": searched,
+                "note": _empty_grep_note(ctx, pattern, glob, searched, ignore_case)}
     return {"hits": hits, "searched": searched}
+
+
+def _match_distribution(ctx: ToolContext, rx, candidates, *, seen: int) -> dict:
+    """How many matches there are in total, and which files hold them."""
+    per_file: list[tuple[str, int]] = []
+    total = 0
+    for p in candidates:
+        if any(part in SKIP_DIRS for part in p.parts) or not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        count = sum(1 for line in text.splitlines() if rx.search(line))
+        if count:
+            per_file.append((p.relative_to(ctx.root).as_posix(), count))
+            total += count
+    per_file.sort(key=lambda pair: (-pair[1], pair[0]))
+    summary = ", ".join(f"{name} ({count})"
+                        for name, count in per_file[:GREP_DISTRIBUTION_FILES])
+    if len(per_file) > GREP_DISTRIBUTION_FILES:
+        summary += f", y {len(per_file) - GREP_DISTRIBUTION_FILES} ficheros mas"
+    return {"total": max(total, seen), "files": len(per_file), "summary": summary or "-"}
+
+
+def _empty_grep_note(ctx: ToolContext, pattern: str, glob: str,
+                     searched: int, ignore_case: bool) -> str:
+    """Say what the system already knows about why a search found nothing.
+
+    Not hypotheses: facts it can check for free. Whether the glob matched any
+    file at all, which extensions the repository actually contains, whether the
+    same pattern matches when case is ignored, and which words of a multi-word
+    pattern appear anywhere. Answering only 'no matches' when all of that is
+    one pass away is the harness withholding what it knows -- and it is what 46
+    of 100 agents were told, over and over, before giving up.
+    """
+    if searched == 0:
+        present = Counter(
+            p.suffix.lower() for p in ctx.root.rglob("*")
+            if p.is_file() and p.suffix and not any(part in SKIP_DIRS for part in p.parts)
+        )
+        top = ", ".join(f"{ext} ({count})" for ext, count in present.most_common(8))
+        return (f"[{ERROR_SEARCH_SCOPE_EMPTY}: el glob {glob!r} no encaja con NINGUN "
+                f"fichero, asi que no se ha buscado en ninguna parte. El repositorio "
+                f"tiene: {top or '(ningun fichero con extension)'}. Cambia el glob.]")
+
+    extra: list[str] = []
+    if not ignore_case:
+        try:
+            insensitive = re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            insensitive = None
+        if insensitive is not None and _any_match(ctx, insensitive, glob):
+            extra.append("SI hay coincidencias si ignoras mayusculas: "
+                         "repite con ignore_case=True")
+
+    words = [w for w in re.split(r"[^A-Za-z0-9_]+", pattern) if len(w) > 2]
+    if len(words) > 1:
+        found = [w for w in dict.fromkeys(words)
+                 if _any_match(ctx, re.compile(re.escape(w), re.IGNORECASE), glob)]
+        missing = [w for w in dict.fromkeys(words) if w not in found]
+        if found:
+            extra.append("de tu patron SI aparecen por separado: " + ", ".join(found[:6]))
+        if missing:
+            extra.append("no aparecen en ninguna parte: " + ", ".join(missing[:6]))
+
+    tail = (" " + ". ".join(extra) + ".") if extra else (
+        " Prueba search_code(query=...) con una descripcion en palabras: "
+        "busca por significado y no exige el literal exacto."
+    )
+    return (f"[{ERROR_NO_MATCH}: 0 coincidencias para {pattern!r} en {glob!r} "
+            f"(buscado en {searched} ficheros).{tail}]")
+
+
+def _any_match(ctx: ToolContext, rx, glob: str) -> bool:
+    try:
+        candidates = sorted(ctx.root.glob(glob))
+    except (OSError, ValueError, IndexError):
+        return False
+    for p in candidates:
+        if any(part in SKIP_DIRS for part in p.parts) or not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if rx.search(text):
+            return True
+    return False
+
+
+def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = None) -> dict:
+    """Find the code a description is talking about, by meaning rather than literal.
+
+    The organ that was missing (F-59). ``grep`` answers "where does this exact
+    string appear"; every other tool needs you to already know the file. Nothing
+    answered "which of these four thousand functions is the one being
+    described", so an agent given a paraphrase had to guess literal search terms
+    out of it -- and when the guess missed, guess again.
+
+    Measured on the RepoQA python split: of 100 failures, 46 ended with the
+    agent reporting it had searched and found nothing, for a function that was
+    on disk every time, and 33 more answered with a different function. Ranking
+    the repository's declarations against the description puts the right one in
+    the top 15 for 82 of those 100 cases.
+    """
+    if not isinstance(query, str) or not query.strip():
+        raise InvalidCall(ERROR_BAD_ARGUMENTS,
+                          "query debe ser texto: describe lo que buscas, con palabras")
+    if limit is None:
+        limit = SEARCH_DEFAULT_LIMIT
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_SEARCH_LIMIT:
+        raise InvalidCall(ERROR_BAD_ARGUMENTS,
+                          f"limit debe ser un entero entre 1 y {MAX_SEARCH_LIMIT}")
+    prefix = ""
+    if path is not None and str(path).strip() not in ("", ".", "/"):
+        prefix, _target = _resolve_dir(ctx, path)
+        prefix = "" if prefix == "." else prefix.rstrip("/") + "/"
+
+    index = ctx.index()
+    if not len(index):
+        raise ToolError(
+            ERROR_SEARCH_SCOPE_EMPTY,
+            "no hay ningun fichero de codigo indexable en este repositorio.",
+        )
+
+    # Over-fetch when filtering by path, so a subtree still yields `limit` rows.
+    raw = index.search(query, limit=limit if not prefix else min(limit * 20, 1000))
+    if prefix:
+        raw = [pair for pair in raw if pair[0].path.startswith(prefix)][:limit]
+
+    if not raw:
+        known, unknown = index.matched_terms(query)
+        detail = f"ninguna region coincide con {query!r}"
+        if prefix:
+            detail += f" bajo {prefix!r}"
+        if unknown:
+            detail += (". Estas palabras no aparecen en NINGUN sitio del repositorio: "
+                       + ", ".join(unknown[:8]))
+        if known:
+            detail += ". Si aparecen: " + ", ".join(known[:8])
+        raise ToolError(ERROR_NO_MATCH, detail + ".")
+
+    candidates = [{
+        "rank": n,
+        "path": region.path,
+        "lines": f"{region.start}-{region.end}",
+        "declares": region.header,
+        "preview": region.preview,
+        "score": round(score, 2),
+    } for n, (region, score) in enumerate(raw, 1)]
+
+    return {
+        "query": query,
+        "candidates": candidates,
+        "indexed": {"regions": len(index), "files": index.files_indexed},
+        "note": ("[candidatos ordenados por parecido con tu descripcion, no por "
+                 "certeza: el primero no tiene por que ser el bueno. Mira las "
+                 "declaraciones y lee con read_symbol o read_file(start, end) "
+                 "el que encaje.]"),
+    }
+
+
+def _require_python(rel: str) -> None:
+    """Refuse a file this tool cannot parse, and say what to use instead.
+
+    ``list_symbols`` and ``read_symbol`` are built on ``ast``, so they only ever
+    worked for Python. Handed a TypeScript, Java or Rust file they reported
+    ERROR_SYNTAX -- "linea 1: invalid syntax" -- about a perfectly valid file.
+    That is the harness asserting something false about the repository, and an
+    agent that believes it goes looking for a bug that does not exist.
+
+    The limitation stays; the lie does not. There is a language-agnostic path
+    for exactly this (search_code returns a line range, read_file reads it), so
+    the error names it.
+    """
+    if rel.rsplit(".", 1)[-1].lower() in ("py", "pyi"):
+        return
+    raise ToolError(
+        ERROR_LANGUAGE_UNSUPPORTED,
+        f"{rel!r} no es Python, y esta herramienta solo entiende Python. "
+        f"El fichero NO esta mal: es esta herramienta la que no lo lee.\n"
+        f"  Para cualquier lenguaje: search_code(query=...) te da fichero y "
+        f"rango de lineas, y read_file(path, start=, end=) te da el codigo.",
+    )
 
 
 def list_symbols(ctx: ToolContext, path: Any) -> list[str]:
     rel, target = _resolve(ctx, path)
     source = _read_text(rel, target)
+    _require_python(rel)
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -567,6 +795,7 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
     name = name.strip()
 
     source = _read_text(rel, target)
+    _require_python(rel)
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -1167,6 +1396,41 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
             + "\n  Arregla eso y vuelve a ejecutar run_tests. Si de verdad no puedes: "
             "finish(status='BLOCKED', summary='<que te lo impide>').",
         )
+    # F-61. NO_CHANGE with an empty diff gets the same single question BLOCKED
+    # gets, and for the same reason: the harness cannot tell "I examined this
+    # and there is genuinely nothing to do" from "I think I already did it"
+    # without asking, and only one of those is true.
+    #
+    # It is asked with FACTS, not suspicion: nothing was created or modified,
+    # and this is what the mission said you could create. Seven runs ended in
+    # NO_CHANGE while their own summary said the deliverable had been written;
+    # the harness knew the file did not exist and said nothing. A second
+    # NO_CHANGE is accepted immediately, always.
+    if (
+        normalised == "NO_CHANGE"
+        and not ctx.changed_files
+        and not ctx.no_change_once
+        and ctx.turns_left is not None
+        and ctx.turns_left >= 2
+    ):
+        ctx.no_change_once = True
+        expected = ""
+        if ctx.allowed_new_files:
+            expected = ("\n  Esta mision te autorizaba a CREAR: "
+                        + ", ".join(ctx.allowed_new_files[:6])
+                        + ". Ninguno existe todavia.")
+        elif ctx.write_scope:
+            expected = ("\n  Esta mision te autorizaba a escribir en: "
+                        + ", ".join(ctx.write_scope[:6]) + ".")
+        raise ToolError(
+            ERROR_NOTHING_CHANGED,
+            "antes de aceptar 'no hace falta ningun cambio': NO has creado ni "
+            "modificado NINGUN fichero en todo el run." + expected
+            + "\n  Si crees que ya escribiste algo, no llego a disco: compruebalo "
+            "con read_file o list_dir y escribelo ahora si falta.\n"
+            "  Si de verdad no hay nada que hacer, vuelve a llamar a "
+            "finish(status='NO_CHANGE') y lo acepto sin mas preguntas.",
+        )
     # F-45. BLOCKED is a good outcome and must stay cheap to reach -- but
     # "I tried once and it did not work" is not "I cannot do this", and the
     # harness cannot tell them apart without asking. ga07 gave up on turn 10 of
@@ -1219,6 +1483,7 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "read_file": (("path",), ("start", "end")),
     "list_dir": ((), ("path", "recursive")),
     "grep": (("pattern",), ("glob", "context", "ignore_case")),
+    "search_code": (("query",), ("limit", "path")),
     "list_symbols": (("path",), ()),
     "read_symbol": (("path", "name"), ()),
     "edit": (("path", "old", "new"), ()),
@@ -1233,6 +1498,7 @@ _IMPL = {
     "read_file": read_file,
     "list_dir": list_dir,
     "grep": grep,
+    "search_code": search_code,
     "list_symbols": list_symbols,
     "read_symbol": read_symbol,
     "edit": edit,
@@ -1375,6 +1641,15 @@ TOOL_DOC: dict[str, str] = {
         "coincidencia, asi que muchas veces te ahorra el read_file siguiente. "
         "Con ignore_case=True busca sin distinguir mayusculas y minusculas."
     ),
+    "search_code": (
+        "Busca por SIGNIFICADO, no por texto literal: le das una descripcion en "
+        "palabras de lo que hace el codigo que buscas y te devuelve los sitios "
+        "del repositorio que mas se le parecen, ordenados, con fichero, rango de "
+        "lineas y la linea de declaracion. Es la herramienta para empezar cuando "
+        "NO sabes como se llama ni donde esta lo que buscas -- grep necesita que "
+        "aciertes el literal exacto, esto no. Funciona en cualquier lenguaje. "
+        "Despues lee el candidato que encaje con read_symbol o read_file."
+    ),
     "list_symbols": (
         "Devuelve lo que define un fichero Python -- funciones, clases y tambien "
         "las constantes y tablas de modulo -- con su numero de linea, en forma "
@@ -1441,6 +1716,8 @@ PARAM_DOC: dict[str, str] = {
     "start": "Primera linea, empezando en 1. En read_file, null lee desde el principio.",
     "end": "Ultima linea, incluida. En read_file, null lee hasta el final.",
     "pattern": "Expresion regular de Python. Se busca linea a linea.",
+    "query": "Que buscas, en palabras. PEGA EL TEXTO DEL OBJETIVO TAL CUAL, sin resumirlo: cuantas mas palabras le des, mejor ordena. Resumir la descripcion en cuatro palabras empeora el resultado.",
+    "limit": "Cuantos candidatos devolver (1-50). Por defecto 15.",
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
     "context": "Lineas de contexto alrededor de cada coincidencia (0-20). 0 solo da la linea.",
     "ignore_case": "Booleano; si es True, busca sin distinguir mayusculas y minusculas. Por defecto False.",
@@ -1486,6 +1763,8 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "start": {"type": ["integer", "null"]},
         "end": {"type": ["integer", "null"]},
         "pattern": {"type": "string"},
+        "query": {"type": "string"},
+        "limit": {"type": ["integer", "null"]},
         "glob": {"type": "string"},
         "context": {"type": ["integer", "null"]},
         "ignore_case": {"type": "boolean"},

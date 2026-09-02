@@ -164,6 +164,23 @@ ERROR_EMPTY_DIRECTORY = "ERROR_EMPTY_DIRECTORY"
 #: can narrow instead of assuming it saw everything.
 ERROR_TOO_MANY_ENTRIES = "ERROR_TOO_MANY_ENTRIES"
 
+#: The search ran against nothing at all -- a glob that matched no file, or a
+#: repository with no indexable source. Distinct from "no matches" on purpose:
+#: one means the answer is not there, the other means the question was never
+#: asked, and an agent told the first when the second is true will abandon a
+#: search it never actually ran.
+ERROR_SEARCH_SCOPE_EMPTY = "ERROR_SEARCH_SCOPE_EMPTY"
+
+#: The result was cut to fit. Says so explicitly so "50 hits" is never read as
+#: "50 hits exist".
+ERROR_RESULT_TRUNCATED = "ERROR_RESULT_TRUNCATED"
+
+#: The tool understands one language and this file is in another. Distinct from
+#: ERROR_SYNTAX on purpose: a valid TypeScript file reported as "linea 1:
+#: invalid syntax" is the harness stating something false about the repository,
+#: and an agent that believes it will go looking for a bug that is not there.
+ERROR_LANGUAGE_UNSUPPORTED = "ERROR_LANGUAGE_UNSUPPORTED"
+
 TOOL_ERROR_CODES = frozenset({
     ERROR_PATH_OUTSIDE_REPO,
     ERROR_FILE_NOT_FOUND,

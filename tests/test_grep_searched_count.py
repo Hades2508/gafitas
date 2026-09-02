@@ -63,9 +63,25 @@ def test_a_glob_that_matches_nothing_reports_zero_searched(ctx):
 
 
 def test_the_note_says_when_nothing_was_searched(ctx):
-    """A count in a field is useless if the model only reads the prose."""
+    """A count in a field is useless if the model only reads the prose.
+
+    The wording changed with F-59 (the note now carries an explicit
+    ERROR_SEARCH_SCOPE_EMPTY code and lists the extensions that DO exist), so
+    this asserts the fact rather than the old sentence: the prose must say that
+    nothing was searched, however it says it.
+    """
     out = call(ctx, pattern="def alpha", glob="**/*.rs")
-    assert "0 ficheros" in out.value["note"] or "ningun fichero" in out.value["note"]
+    note = out.value["note"]
+    assert "SCOPE_EMPTY" in note or "0 ficheros" in note or "ningun fichero" in note.lower()
+    assert "NINGUN fichero" in note or "0 ficheros" in note
+
+
+def test_an_empty_scope_names_the_extensions_that_do_exist(ctx):
+    """F-59: 'nothing matched' when the glob matched no file at all is the
+    harness withholding what it knows. The repository's own extensions are one
+    pass away and they are what the agent needs to fix the glob."""
+    note = call(ctx, pattern="def alpha", glob="**/*.rs").value["note"]
+    assert ".py" in note and ".txt" in note
 
 
 def test_a_narrower_glob_reports_a_smaller_count(ctx):

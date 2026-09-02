@@ -76,8 +76,13 @@ argumento las tienes en su definicion; leelas.
 
 COMO TRABAJAR
 
-1. ORIENTATE. Si no conoces el repositorio, empieza por list_dir y grep. No
-   adivines nombres de ficheros.
+1. ORIENTATE. Si no conoces el repositorio, empieza por list_dir. No adivines
+   nombres de ficheros.
+   Si NO SABES donde esta lo que buscas ni como se llama, usa search_code y
+   pegale el texto del objetivo tal cual: busca por significado y te devuelve
+   los sitios que mas se le parecen. grep es para cuando ya sabes el literal
+   exacto que quieres encontrar; si le das una frase descriptiva no encontrara
+   nada, porque compara texto, no ideas.
    En un fichero GRANDE no lo leas entero: list_symbols te dice que hay dentro
    y read_symbol te da una funcion o clase concreta con sus lineas. Leer el
    mismo fichero una y otra vez gasta turnos y no averigua nada nuevo.

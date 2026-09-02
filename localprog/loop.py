@@ -73,6 +73,15 @@ REPEAT_NOTICE_AFTER = 2
 #: one edit in forty turns. The harness could see that and never said it.
 NO_EDIT_NOTICE_AFTER = 12
 
+#: Fruitless searches remembered before the agent is shown the whole list
+#: (F-60). Two is a coincidence; the third is a pattern, and by then the agent
+#: has usually forgotten the first one it tried.
+FRUITLESS_SEARCH_NOTICE_AFTER = 3
+
+#: Which tools count as "looking for something". A call that returns nothing
+#: from one of these is a dead end worth remembering; a failed edit is not.
+SEARCH_TOOLS = ("grep", "search_code", "list_symbols", "read_symbol")
+
 #: Extra attempts for one provider call before the run is abandoned (F-30).
 PROVIDER_RETRIES = 2
 
@@ -113,6 +122,9 @@ class LoopResult:
     #: Provider calls that failed and were retried successfully. Non-zero means
     #: the run survived something that used to end it (F-30).
     provider_retries: int = 0
+    #: Searches that came back with nothing, in order. A long list on a failed
+    #: run is the signature of a retrieval problem rather than a coding one.
+    dead_ends: list[str] = field(default_factory=list)
     provider_error: dict | None = None
     harness_invalid: dict | None = None
     events: list[dict] = field(default_factory=list)
@@ -144,6 +156,7 @@ class LoopResult:
             "usage": dict(self.usage),
             "stalled_after": self.stalled_after,
             "max_repeat": self.max_repeat,
+            "dead_ends": list(self.dead_ends),
             "provider_retries": self.provider_retries,
             "provider_error": self.provider_error,
             "harness_invalid": self.harness_invalid,
@@ -259,6 +272,94 @@ def _repeat_note(count: int, tool_name: str) -> str:
             f"lo mismo.]")
 
 
+#: How much of one argument value is sealed into the evidence (F-58). Enough to
+#: read back the query the agent actually ran; not the whole file it wrote.
+EVENT_ARG_CHARS = 300
+
+
+def _event_args(arguments: Any) -> Any:
+    """The call's arguments, small enough to keep for every turn of every run.
+
+    ``evidence.py`` has said since it was written that every tool call and *its
+    arguments* are sealed. The arguments were never actually recorded, and the
+    gap only became visible when a retrieval failure had to be diagnosed from
+    the sealed runs: 46 of 100 cases ended with the agent saying it had searched
+    and found nothing, and there was no way to see WHAT it searched for. A
+    transcript without the queries cannot answer the one question a retrieval
+    audit asks.
+    """
+    if not isinstance(arguments, dict):
+        text = str(arguments)
+        return text[:EVENT_ARG_CHARS] + ("..." if len(text) > EVENT_ARG_CHARS else "")
+    out: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if isinstance(value, (int, float, bool)) or value is None:
+            out[key] = value
+            continue
+        text = value if isinstance(value, str) else repr(value)
+        out[key] = (text[:EVENT_ARG_CHARS] + f"...(+{len(text) - EVENT_ARG_CHARS} chars)"
+                    if len(text) > EVENT_ARG_CHARS else text)
+    return out
+
+
+def _seen_before_note(previous_turn: int | None, count: int) -> str:
+    """Say that this exact call has already been made, and when (F-60).
+
+    ``_repeat_note`` catches an identical RESULT twice in a row. This catches
+    the other shape, which the sealed runs are full of: the same search
+    repeated five or ten turns later, after the agent has forgotten it already
+    tried it. The transcript window means it genuinely cannot see the earlier
+    attempt, so the harness -- which can -- has to be the one that remembers.
+    """
+    if previous_turn is None or count < 2:
+        return ""
+    return (f"\n[Ya hiciste EXACTAMENTE esta llamada en el turno {previous_turn} "
+            f"(van {count}). El repositorio no ha cambiado desde entonces, asi que "
+            f"la respuesta es la misma. Prueba otra cosa: otros terminos, otro "
+            f"fichero, u otra herramienta.]")
+
+
+def _fruitless_note(dead_ends: list[str]) -> str:
+    """List the searches that have already come back empty (F-60).
+
+    Negative results are information and they are the first thing to fall out
+    of a truncated transcript. An agent that cannot see its own dead ends walks
+    back into them, which is exactly what 46 of 100 failed RepoQA runs did
+    before finishing BLOCKED.
+    """
+    if len(dead_ends) < FRUITLESS_SEARCH_NOTICE_AFTER:
+        return ""
+    shown = ", ".join(dead_ends[-6:])
+    return (f"\n[Llevas {len(dead_ends)} busquedas que no han encontrado nada: "
+            f"{shown}. Ese camino no esta dando resultado. Si buscas por literal, "
+            f"prueba search_code(query=...) describiendo con palabras lo que hace "
+            f"el codigo; si ya lo haces, cambia los terminos.]")
+
+
+def _found_nothing(name: str, value: Any) -> bool:
+    """Whether a SUCCESSFUL search call actually returned any result."""
+    if name not in SEARCH_TOOLS:
+        return False
+    if isinstance(value, dict):
+        if "hits" in value:
+            return not value["hits"]
+        if "candidates" in value:
+            return not value["candidates"]
+    if isinstance(value, list):
+        return not value
+    return False
+
+
+def _search_label(name: str, arguments: Any) -> str:
+    """A short, readable name for one search, for the dead-end list."""
+    if isinstance(arguments, dict):
+        for key in ("pattern", "query", "name", "path"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value.strip():
+                return f"{name}({value.strip()[:40]!r})"
+    return name + "(...)"
+
+
 def _signature(name: str, arguments: Any) -> str:
     try:
         return name + "|" + json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
@@ -304,6 +405,8 @@ def run_loop(
     repeat_count = 0
     last_tool_error: tuple[str, str] | None = None
     error_repeat = 0
+    first_seen: dict[str, int] = {}
+    dead_ends: list[str] = []
 
     try:
         for turn in range(1, max_turns + 1):
@@ -365,7 +468,10 @@ def run_loop(
 
             consecutive_dead = 0
             signature = _signature(call.name, call.arguments)
+            seen_at = first_seen.get(signature)
             signatures[signature] += 1
+            if seen_at is None:
+                first_seen[signature] = turn
             used[call.name if isinstance(call.name, str) else "(no-string)"] += 1
 
             outcome = tools.dispatch(ctx, call.name, call.arguments)
@@ -380,7 +486,15 @@ def run_loop(
                 key = (outcome.name, payload)
                 repeat_count = repeat_count + 1 if key == last_payload else 1
                 last_payload = key
+                if _found_nothing(outcome.name, outcome.value):
+                    label = _search_label(outcome.name, call.arguments)
+                    if label not in dead_ends:
+                        dead_ends.append(label)
+
                 annotated = payload + _repeat_note(repeat_count, outcome.name)
+                annotated += _seen_before_note(seen_at, signatures[signature])
+                if _found_nothing(outcome.name, outcome.value):
+                    annotated += _fruitless_note(dead_ends)
                 # F-22: and how much budget is left to act on it.
                 annotated += _no_edit_note(turn, len(ctx.changed_files), max_turns)
                 annotated += _budget_note(turn, max_turns)
@@ -388,6 +502,8 @@ def run_loop(
                 transcript.add(Turn(number=turn, assistant=assistant,
                                     tool_name=outcome.name, tool_payload=annotated))
                 events.append({"turn": turn, "tool": outcome.name, "ok": True,
+                               "args": _event_args(call.arguments),
+                               "seen_at": seen_at,
                                "result_chars": len(payload),
                                "repeat_count": repeat_count,
                                "prompt_tokens": turn_input})
@@ -403,37 +519,47 @@ def run_loop(
             else:
                 result.tool_errors += 1
 
-            # Contract §7: a second consecutive finish() is the legitimate way
-            # to say "this mission needs no change".
-            if (
-                outcome.name == "finish"
-                and outcome.code == ERROR_NOTHING_CHANGED
-                and last_call_was_finish
-            ):
-                result.outcome = FINISHED
-                result.finished_without_changes = True
-                transcript.add(Turn(number=turn, assistant=assistant, tool_name="finish",
-                                    tool_payload="FINISHED (sin cambios, confirmado)"))
-                events.append({"turn": turn, "tool": "finish", "ok": True, "no_changes": True})
-                break
+            # F-61: the double-finish escape used to live here. It predates
+            # finish(status='NO_CHANGE') (F-10), which is now the explicit and
+            # only way to say a mission needs no change -- and while both
+            # existed, ANY refused finish could be turned into an accepted one
+            # simply by making the same call again.
+            #
+            # That is not a theoretical objection. Seven RepoQA runs ended this
+            # way: the agent reported in its own summary that it had written the
+            # answer file, had in fact never called write_file once, was refused
+            # for having changed nothing, repeated itself, and was recorded as
+            # having deliberately finished. A rule that converts "you have not
+            # done the work" into "confirmed, there was no work" on the second
+            # attempt is a rule that launders failure into completion.
 
             # F-43: the same error, again. F-23 says an identical RESULT twice
             # running means nothing changed; an identical ERROR is the same fact
             # and more urgent, because it means feedback the agent is already
             # receiving is not reaching its decisions. ga04 was refused the same
             # way ten times while sitting on 14 of 16 tests green.
+            if outcome.name in SEARCH_TOOLS and outcome.code in (
+                "ERROR_NO_MATCH", "ERROR_SEARCH_SCOPE_EMPTY", "ERROR_FILE_NOT_FOUND"
+            ):
+                label = _search_label(outcome.name, call.arguments)
+                if label not in dead_ends:
+                    dead_ends.append(label)
+
             error_key = (outcome.name, outcome.code or "")
             error_repeat = error_repeat + 1 if error_key == last_tool_error else 1
             last_tool_error = error_key
             feedback = (outcome.feedback or "") + _error_repeat_note(
                 error_repeat, outcome.name, outcome.code
-            )
+            ) + _seen_before_note(seen_at, signatures[signature])
+            if outcome.name in SEARCH_TOOLS:
+                feedback += _fruitless_note(dead_ends)
             transcript.add(Turn(
                 number=turn, assistant=assistant, tool_name=outcome.name,
                 tool_payload=feedback + _budget_note(turn, max_turns),
                 is_error=True,
             ))
             events.append({"turn": turn, "tool": outcome.name, "ok": False,
+                           "args": _event_args(call.arguments),
                            "code": outcome.code, "invalid_call": outcome.invalid_call,
                            "prompt_tokens": turn_input})
             last_call_was_finish = outcome.name == "finish"
@@ -447,6 +573,7 @@ def run_loop(
     result.tools_used = dict(used)
     result.loops = sum(1 for count in signatures.values() if count >= LOOP_THRESHOLD)
     result.max_repeat = repeat_count
+    result.dead_ends = dead_ends
     result.changed_files = sorted(ctx.changed_files)
     result.tests_green = ctx.tests_green
     result.elisions = max(result.elisions, transcript.elisions)

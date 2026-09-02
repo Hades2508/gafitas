@@ -148,9 +148,29 @@ def test_repeated_identical_calls_are_counted_as_a_loop(ctx):
     assert result.loops == 1
 
 
-def test_double_finish_without_changes_is_accepted(ctx):
+def test_repeating_a_refused_finish_no_longer_launders_it(ctx):
+    """F-61 removed the double-finish escape.
+
+    It predated finish(status='NO_CHANGE'), and while both existed ANY refused
+    finish could be turned into an accepted one by making the same call again.
+    Seven RepoQA runs ended exactly that way: the summary claimed the answer
+    file had been written, write_file had never been called, the refusal was
+    correct, and the repeat converted it into a deliberate ending.
+    """
     result = run(ctx, [tc("finish", summary="nada"), tc("finish", summary="nada")], max_turns=2)
-    assert result.outcome == loop.FINISHED and result.finished_without_changes
+    assert result.outcome == loop.BUDGET_EXHAUSTED
+    assert not result.finished_without_changes
+    assert result.tool_errors == 2, "both attempts refused, neither laundered"
+
+
+def test_no_change_is_the_way_to_say_there_is_nothing_to_do(ctx):
+    """The replacement is explicit rather than incidental: say NO_CHANGE. It is
+    questioned once when the diff is empty, then accepted."""
+    result = run(ctx, [tc("finish", summary="nada que hacer", status="NO_CHANGE"),
+                       tc("finish", summary="nada que hacer", status="NO_CHANGE")],
+                 max_turns=4)
+    assert result.outcome == loop.FINISHED
+    assert ctx.finish_status == "NO_CHANGE"
 
 
 def test_single_finish_without_changes_is_not_accepted(ctx):
