@@ -69,7 +69,15 @@ HEAD_LINES = 200
 MAX_TOOL_PAYLOAD_CHARS = 20000
 MAX_GREP_HITS = 50
 TEST_TIMEOUT_SECONDS = 120.0
-TEST_OUTPUT_TAIL = 3000
+#: How much pytest output reaches the model (F-46).
+#:
+#: This was 3000, sized against the original 8192-token context and never
+#: revisited -- so the single most important feedback channel in the loop was
+#: also the most aggressively truncated thing in the system. Every run_tests
+#: result in the ga04/ga07/ga08 failures came back at 3131-3171 characters:
+#: clipped, every time, on exactly the runs where the agent was one test short
+#: and needed to see why.
+TEST_OUTPUT_TAIL = 9000
 SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules"}
 FINISH_STATUSES = ("DONE", "NO_CHANGE", "BLOCKED")
 MAX_DIR_ENTRIES = 200
@@ -862,7 +870,15 @@ def run_tests(ctx: ToolContext, node_ids: Any = None) -> dict:
         head = _normalise(t).split("::", 1)[0]
         _resolve(ctx, head)
 
-    argv = [sys.executable, "-B", "-m", "pytest", "-q", *targets]
+    argv = [
+        sys.executable, "-B", "-m", "pytest", "-q",
+        # Short tracebacks and a failure summary. The default traceback style
+        # spends most of the output budget on frames from pytest's own
+        # internals, which tells the agent nothing about its code (F-47).
+        "--tb=short", "-rf", "-p", "no:cacheprovider",
+        "--continue-on-collection-errors",
+        *targets,
+    ]
     try:
         proc = subprocess.run(
             argv, cwd=str(ctx.root), capture_output=True, text=True,
@@ -884,10 +900,19 @@ def run_tests(ctx: ToolContext, node_ids: Any = None) -> dict:
     if passed and covers_acceptance:
         ctx.tests_green = True
     output = (proc.stdout + proc.stderr)[-TEST_OUTPUT_TAIL:]
+    failing = sorted({
+        line.split(" - ")[0].removeprefix("FAILED ").removeprefix("ERROR ").strip()
+        for line in output.splitlines()
+        if line.startswith("FAILED ") or line.startswith("ERROR ")
+    })
     result = {
         "passed": passed,
         "exit_code": proc.returncode,
         "timed_out": False,
+        # Structured, so the names survive even if the text is clipped. The
+        # output tail is the first thing to be cut and the failing test names
+        # are the last thing that should be lost (F-47).
+        "failing": failing,
         "output": output,
     }
     # F-42: remember what failed. Several turns later this output has been

@@ -186,21 +186,31 @@ def cmd_work(args) -> int:
     routed_all = []
     try:
         for path in args.tickets:
-            ticket = work.load_ticket(Path(path))
+            base = work.load_ticket(Path(path))
             if args.max_turns:
-                ticket = replace(ticket, max_turns=args.max_turns)
-            routed = route.run_with_ladder(
-                ticket, tiers=tiers,
-                out_dir=out, telemetry=telemetry, num_ctx=args.num_ctx,
-            )
-            routed_all.append(routed)
-            record = routed.result
-            records.append(record)
-            trail = " -> ".join(f"{a.tier}:{a.outcome}" for a in routed.attempts)
-            print(f"  {record.ticket_id:<16} {record.outcome:<24} "
-                  f"{record.turns_used:>3} turnos  "
-                  f"{record.usage.get('output_tokens', 0):>6} tok_out  "
-                  f"{record.wall_seconds:>6.1f}s  [{trail}]")
+                base = replace(base, max_turns=args.max_turns)
+            for attempt in range(1, args.repeat + 1):
+                # Repetitions get distinct ids so their evidence does not
+                # overwrite itself. A stochastic system measured once is
+                # measured badly: the same model on the same ticket has
+                # produced both 5-of-6 tests green and zero edits in forty
+                # turns, and a single sample cannot tell a real regression
+                # from that spread.
+                ticket = base if args.repeat == 1 else replace(
+                    base, ticket_id=f"{base.ticket_id}#{attempt}"
+                )
+                routed = route.run_with_ladder(
+                    ticket, tiers=tiers,
+                    out_dir=out, telemetry=telemetry, num_ctx=args.num_ctx,
+                )
+                routed_all.append(routed)
+                record = routed.result
+                records.append(record)
+                trail = " -> ".join(f"{a.tier}:{a.outcome}" for a in routed.attempts)
+                print(f"  {record.ticket_id:<16} {record.outcome:<24} "
+                      f"{record.turns_used:>3} turnos  "
+                      f"{record.usage.get('output_tokens', 0):>6} tok_out  "
+                      f"{record.wall_seconds:>6.1f}s  [{trail}]")
     finally:
         telemetry.close()
 
@@ -250,6 +260,15 @@ NL = chr(10)
 
 def _write_work_report(out: Path, records, routed_all=()) -> None:
     lines = ["# GAFITAS WORK", ""]
+    by_ticket: dict = {}
+    for r in records:
+        by_ticket.setdefault(r.ticket_id.split("#")[0], []).append(r.outcome)
+    if any(len(v) > 1 for v in by_ticket.values()):
+        lines += ["## Tasa de exito por ticket", ""]
+        for name, outcomes in by_ticket.items():
+            ok = sum(1 for o in outcomes if o in ("PASS", "PASS_UNCONFIRMED"))
+            lines.append(f"- `{name}`: **{ok}/{len(outcomes)}**  ({', '.join(outcomes)})")
+        lines.append("")
     for r in records:
         lines.append(
             f"- `{r.ticket_id}` **{r.outcome}** ({r.model}, {r.loop_outcome}, "
@@ -326,6 +345,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--num-ctx", type=int, default=work.WORK_NUM_CTX)
     p.add_argument("--num-predict", type=int, default=work.WORK_NUM_PREDICT)
     p.add_argument("--max-turns", type=int, default=None)
+    p.add_argument("--repeat", type=int, default=1,
+                   help="Run each ticket N times. A stochastic system "
+                        "measured once is measured badly.")
     p.add_argument("--timeout", type=float, default=300.0)
     p.add_argument("--run-id", default="GAFITAS_WORK")
     p.add_argument("--telemetry-db", default=None)
