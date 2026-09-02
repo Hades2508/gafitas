@@ -51,6 +51,14 @@ WORK_NUM_PREDICT = 4096
 DEFAULT_NUM_PREDICT = 1024
 DEFAULT_TIMEOUT = 120.0
 
+#: How long Ollama keeps the weights resident after a request. Ollama's own
+#: default is five minutes, which on a machine that is also somebody's desktop
+#: means a 9B model sits on 6.6 GB of VRAM and keeps the fans up long after the
+#: run has finished. Keeping it loaded BETWEEN turns is worth it -- reloading
+#: every turn would dominate the wall time -- so this is generous enough to
+#: span a turn and short enough to let go afterwards.
+DEFAULT_KEEP_ALIVE = "90s"
+
 
 @dataclass
 class Call:
@@ -74,12 +82,14 @@ class OllamaProvider:
         num_ctx: int = DEFAULT_NUM_CTX,
         num_predict: int = DEFAULT_NUM_PREDICT,
         timeout: float = DEFAULT_TIMEOUT,
+        keep_alive: str = DEFAULT_KEEP_ALIVE,
     ) -> None:
         self.model = model
         self.endpoint = endpoint
         self.num_ctx = num_ctx
         self.num_predict = num_predict
         self.timeout = timeout
+        self.keep_alive = keep_alive
 
     def describe(self) -> dict:
         return {
@@ -90,7 +100,27 @@ class OllamaProvider:
             "num_ctx": self.num_ctx,
             "num_predict": self.num_predict,
             "timeout": self.timeout,
+            "keep_alive": self.keep_alive,
         }
+
+    def release(self) -> None:
+        """Ask Ollama to drop the weights now.
+
+        Called when a batch finishes. Without it a 9B keeps 6.6 GB of VRAM and
+        the fans up for Ollama's default five minutes after the last request,
+        on a machine that is also somebody's desktop. Best effort: failing to
+        free memory must never fail a run that has already succeeded.
+        """
+        try:
+            request = urllib.request.Request(
+                self.endpoint.replace("/api/chat", "/api/generate"),
+                data=json.dumps({"model": self.model, "keep_alive": 0}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=15):
+                pass
+        except Exception:  # noqa: BLE001 - freeing memory is never worth an error
+            pass
 
     def preflight(self) -> str | None:
         """Return why this provider is unusable, or None if it looks fine.
@@ -121,6 +151,7 @@ class OllamaProvider:
             "messages": messages,
             "stream": False,
             "options": {"num_ctx": self.num_ctx, "num_predict": self.num_predict},
+            "keep_alive": self.keep_alive,
         }
         if tools:
             payload["tools"] = tools

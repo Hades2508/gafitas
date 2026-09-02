@@ -436,20 +436,58 @@ def list_symbols(ctx: ToolContext, path: Any) -> list[str]:
     except (ValueError, RecursionError) as exc:  # null bytes, pathological nesting
         raise ToolError(ERROR_SYNTAX, f"{rel!r}: {exc}") from None
 
-    lineno: dict[str, int] = {}
+    collected = _collect_symbols(tree)
+    lineno = {name: node.lineno for name, node in collected.items()}
 
-    def walk(node, prefix):
+    # edit_channel decides what a CALLABLE is, so this harness and Gafotas' edit
+    # path can never disagree about those names. Module-level data is ours to
+    # add (F-54): edit_channel has no opinion about it, and an agent that cannot
+    # see SPECS or PARAM_DOC cannot change them.
+    names = list(deps.edit_channel.list_symbols(source))
+    for name in collected:
+        if name not in names:
+            names.append(name)
+    names.sort(key=lambda n: (lineno.get(n, 0), n))
+    return [f"{n} (linea {lineno[n]})" if n in lineno else n for n in names]
+
+
+def _assignment_targets(node) -> list[str]:
+    """Names bound by an assignment statement, if it binds simple names.
+
+    Tuple unpacking and subscript targets are skipped rather than guessed at:
+    "A, B = f()" does not have a source range that means "A", and offering one
+    would be worse than saying nothing.
+    """
+    if isinstance(node, ast.AnnAssign):
+        return [node.target.id] if isinstance(node.target, ast.Name) else []
+    if isinstance(node, ast.Assign):
+        return [t.id for t in node.targets if isinstance(t, ast.Name)]
+    return []
+
+
+def _collect_symbols(tree) -> dict:
+    """Every named definition in a module: callables, classes AND data (F-54).
+
+    The last of those is the one that was missing, and it cost whole runs.
+    PARAM_DOC, SPECS, TOOL_DOC, EXIT_CODES, EXCLUDED_DIR_NAMES -- module-level
+    tables are what a ticket most often asks to be changed, and a navigation
+    tool that only walks def and class cannot see any of them.
+    """
+    found: dict = {}
+
+    def walk(node, prefix: str) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 dotted = child.name if not prefix else f"{prefix}.{child.name}"
-                lineno.setdefault(dotted, child.lineno)
+                found.setdefault(dotted, child)
                 walk(child, dotted)
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+                for name in _assignment_targets(child):
+                    dotted = name if not prefix else f"{prefix}.{name}"
+                    found.setdefault(dotted, child)
 
     walk(tree, "")
-    # edit_channel decides what a symbol IS, so this harness and Gafotas' edit
-    # path can never disagree about a name. Line numbers are ours.
-    names = deps.edit_channel.list_symbols(source)
-    return [f"{n} (línea {lineno[n]})" if n in lineno else n for n in names]
+    return found
 
 
 def _syntax_report(source: str, exc: SyntaxError, rel: str) -> str:
@@ -534,16 +572,7 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
     except (ValueError, RecursionError) as exc:
         raise ToolError(ERROR_SYNTAX, f"{rel!r}: {exc}") from None
 
-    found: dict[str, Any] = {}
-
-    def walk(node, prefix: str) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                dotted = child.name if not prefix else f"{prefix}.{child.name}"
-                found.setdefault(dotted, child)
-                walk(child, dotted)
-
-    walk(tree, "")
+    found = _collect_symbols(tree)
 
     node = found.get(name)
     if node is None:
@@ -1345,12 +1374,14 @@ TOOL_DOC: dict[str, str] = {
         "Con ignore_case=True busca sin distinguir mayusculas y minusculas."
     ),
     "list_symbols": (
-        "Devuelve las funciones y clases definidas en un fichero Python, con su "
-        "numero de linea, en forma 'Clase.metodo'. Mas barato que leer el fichero "
-        "entero cuando solo quieres saber que hay dentro."
+        "Devuelve lo que define un fichero Python -- funciones, clases y tambien "
+        "las constantes y tablas de modulo -- con su numero de linea, en forma "
+        "'Clase.metodo'. Mas barato que leer el fichero entero cuando solo "
+        "quieres saber que hay dentro."
     ),
     "read_symbol": (
-        "Devuelve el codigo de UNA funcion o clase por su nombre, con sus "
+        "Devuelve el codigo de UNA funcion, clase o constante por su nombre, "
+        "con sus "
         "numeros de linea reales. Es la forma barata de mirar algo concreto "
         "dentro de un fichero grande: no tienes que adivinar el rango ni leerlo "
         "entero. Acepta 'funcion' o 'Clase.metodo'. Los numeros de linea que "
@@ -1411,7 +1442,7 @@ PARAM_DOC: dict[str, str] = {
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
     "context": "Lineas de contexto alrededor de cada coincidencia (0-20). 0 solo da la linea.",
     "ignore_case": "Booleano; si es True, busca sin distinguir mayusculas y minusculas. Por defecto False.",
-    "name": "Nombre del simbolo: 'mi_funcion' o 'MiClase.mi_metodo'.",
+    "name": "Nombre del simbolo: 'mi_funcion', 'MiClase.mi_metodo' o 'MI_CONSTANTE'.",
     "old": "El texto exacto que hay ahora en el fichero, incluida su indentacion. Debe ser unico.",
     "new": "El texto que lo sustituye. Cadena vacia para borrar el fragmento.",
     "content": "Contenido nuevo: el fichero entero en write_file, o el texto que sustituye al rango en replace_lines.",

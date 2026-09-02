@@ -103,7 +103,47 @@ def test_grep_skips_unreadable_files(ctx, repo):
 
 def test_list_symbols_reports_names_and_lines(ctx):
     out = call(ctx, "list_symbols", path="calc.py")
-    assert out.ok and out.value[0].startswith("add (línea 1)")
+    assert out.ok and out.value[0].startswith("add (linea 1)")
+
+
+def test_list_symbols_sees_module_level_data(ctx, repo):
+    """F-54. list_symbols walked FunctionDef and ClassDef only, so SPECS,
+    TOOL_DOC, PARAM_DOC and every other module-level table were invisible --
+    and those tables are what a ticket most often asks to be changed.
+
+    Three DOGFOOD-03 attempts died leaving tools.py unimportable on
+    "every parameter in SPECS needs an entry in PARAM_DOC": a short, clear
+    message, delivered four times, naming something the agent had no way to
+    locate."""
+    (repo / "config.py").write_text(
+        "LIMITE = 10\n\n\nTABLA: dict = {}\n\n\ndef usar():\n    return TABLA\n",
+        encoding="utf-8",
+    )
+    listed = call(ctx, "list_symbols", path="config.py").value
+    names = {entry.split(" (")[0] for entry in listed}
+    assert {"LIMITE", "TABLA", "usar"} <= names
+
+
+def test_read_symbol_returns_a_module_level_table(ctx, repo):
+    (repo / "config.py").write_text(
+        "OTRA = 1\n\n\nTABLA = {\n    'a': 1,\n    'b': 2,\n}\n",
+        encoding="utf-8",
+    )
+    out = call(ctx, "read_symbol", path="config.py", name="TABLA")
+    assert out.ok, out.feedback
+    assert "'b': 2" in out.value
+    assert "OTRA" not in out.value, "only the table asked for"
+    assert "lineas 4-7" in out.value, "line numbers that feed replace_lines"
+
+
+def test_tuple_unpacking_is_not_offered_as_a_symbol(ctx, repo):
+    """'A, B = f()' has no source range that means 'A'. Offering one would be
+    worse than saying nothing."""
+    (repo / "config.py").write_text("A, B = 1, 2\n\n\nC = 3\n", encoding="utf-8")
+    listed = call(ctx, "list_symbols", path="config.py").value
+    names = {entry.split(" (")[0] for entry in listed}
+    assert "C" in names
+    assert "A" not in names and "B" not in names
 
 
 def test_list_symbols_on_broken_file_is_a_tool_error(ctx, repo):

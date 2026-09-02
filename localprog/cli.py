@@ -223,6 +223,13 @@ def cmd_work(args) -> int:
                       f"{record.wall_seconds:>6.1f}s  [{trail}]")
     finally:
         telemetry.close()
+        # Let go of the VRAM. Ollama holds the weights for five more minutes
+        # by default, which on a shared desktop means a 9B sitting on 6.6 GB
+        # with the fans up long after the work is done.
+        for step in tiers:
+            released = step["provider_factory"](step["model"])
+            if hasattr(released, "release"):
+                released.release()
 
     passed = [r for r in records if r.outcome in (work.PASS, work.PASS_UNCONFIRMED)]
     voided = [r for r in records if r.outcome in (work.HARNESS_INVALID, work.NON_DISCRIMINATING)]

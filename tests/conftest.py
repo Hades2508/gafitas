@@ -34,6 +34,10 @@ def ctx(repo: Path) -> tools.ToolContext:
     )
 
 
-def call(ctx, name, **kwargs):
-    """Dispatch helper: returns the ToolOutcome."""
-    return tools.dispatch(ctx, name, kwargs)
+def call(ctx, tool, **kwargs):
+    """Dispatch helper: returns the ToolOutcome.
+
+    The parameter is 'tool', not 'name': read_symbol takes a 'name' argument,
+    and a helper that also called its first parameter that could never pass it.
+    """
+    return tools.dispatch(ctx, tool, kwargs)
