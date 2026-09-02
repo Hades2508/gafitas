@@ -40,7 +40,14 @@ DEFAULT_NUM_CTX = 8192          # contract §C.2: the only 100%-GPU rung measure
 #: work the KV cache at 32k is about 4.7 GB against 2.5 GB of weights, so
 #: 7.2 GB total -- comfortably inside the same 12 GB.
 WORK_NUM_CTX = 32768
-WORK_NUM_PREDICT = 2048
+#: Raised 2048 -> 4096 (F-52). Ollama returned
+#:   500 invalid tool call arguments for "edit": unexpected end of JSON input
+#: which is the model being CUT OFF mid-argument, not malformed output: a
+#: write_file or an edit carrying a hundred lines of new code does not fit in
+#: 2048 tokens, and the truncated JSON is then rejected by the server. The
+#: symptom looks like a broken model and is an output budget one token too
+#: small for the tool we asked it to call.
+WORK_NUM_PREDICT = 4096
 DEFAULT_NUM_PREDICT = 1024
 DEFAULT_TIMEOUT = 120.0
 

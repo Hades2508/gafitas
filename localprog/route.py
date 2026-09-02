@@ -66,6 +66,17 @@ SUCCESSFUL = frozenset({work.PASS, work.PASS_UNCONFIRMED})
 #: Nobody's model can fix these, so spending on a better one is waste.
 TERMINAL = frozenset({work.NON_DISCRIMINATING, work.PROVIDER_ERROR, work.HARNESS_INVALID})
 
+#: The ticket was not a task. No tier, free or paid, changes that -- asking
+#: again is asking the same question.
+ABANDON = frozenset({work.NON_DISCRIMINATING})
+
+#: The machine broke, or we did. Never a reason to PAY for a better model --
+#: but every reason to try again on a tier that costs nothing (F-51). A
+#: transient 500 on the third local attempt once ended a whole run, and the
+#: free strong tier below it was never reached. "Do not pay for infrastructure
+#: failure" is right; "give up entirely" was not what that meant.
+INFRASTRUCTURE = frozenset({work.PROVIDER_ERROR, work.HARNESS_INVALID})
+
 
 @dataclass
 class Attempt:
@@ -172,6 +183,7 @@ def run_with_ladder(
         # per ticket, most local failures are sampling rather than a ceiling --
         # seven of eight tickets passed at least once in three, and only one
         # never did. A second free attempt beats a paid one nearly every time.
+        free = step["tier"] in FREE_TIERS
         for _ in range(max(1, int(step.get("attempts", 1)))):
             result = runner(
                 ticket, step["model"],
@@ -184,9 +196,28 @@ def run_with_ladder(
                 wall_seconds=result.wall_seconds, usage=dict(result.usage),
             ))
             routed.result = result
+            if result.outcome in ABANDON:
+                return routed
+            # F-51: on a free tier an infrastructure failure is worth another
+            # go -- it costs nothing and the attempt never really happened.
+            if result.outcome in INFRASTRUCTURE and free:
+                continue
             if not should_escalate(result.outcome):
                 break
-        if not should_escalate(routed.result.outcome):
+        outcome = routed.result.outcome
+        if outcome in ABANDON:
+            break
+        # Moving UP costs money eventually, so infrastructure failures stop
+        # here rather than buying a paid opinion on a broken server.
+        if outcome in INFRASTRUCTURE and not free:
+            break
+        if outcome in INFRASTRUCTURE and free:
+            # Every free attempt was eaten by the same fault. The next tier is
+            # only worth trying if it is also free.
+            if all(t["tier"] in FREE_TIERS for t in tiers[tiers.index(step) + 1:][:1]):
+                continue
+            break
+        if not should_escalate(outcome):
             break
     return routed
 

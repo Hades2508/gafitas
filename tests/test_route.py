@@ -360,3 +360,56 @@ def test_luna_is_absent_from_the_free_tier_set():
     assert route.LOCAL in route.FREE_TIERS
     assert route.LOCAL_STRONG in route.FREE_TIERS
     assert route.LUNA not in route.FREE_TIERS
+
+
+# ------------------------------------------------------------------ F-51
+
+
+def test_a_provider_error_does_not_consume_the_free_ladder(tmp_path):
+    """A transient 500 on the third local attempt once ended a whole run, and
+    the free strong tier below it was never reached. 'Do not pay for
+    infrastructure failure' is right; 'give up entirely' was not what it meant."""
+    runner, seen = ladder(work.FAIL, work.PROVIDER_ERROR, work.PASS)
+    tiers = [{"tier": route.LOCAL, "model": "local", "protocol": "A", "attempts": 3}]
+    routed = route.run_with_ladder(ticket(tmp_path), tiers=tiers, runner=runner)
+    assert routed.outcome == work.PASS
+    assert len(seen) == 3
+
+
+def test_a_provider_error_still_never_buys_a_paid_opinion(tmp_path):
+    """Moving up costs money eventually, and a broken server is not a reason to
+    spend it."""
+    runner, seen = ladder(work.PROVIDER_ERROR, work.PASS)
+    tiers = [
+        {"tier": route.LOCAL, "model": "local", "protocol": "A", "attempts": 1},
+        {"tier": route.LUNA, "model": "luna", "protocol": "J"},
+    ]
+    routed = route.run_with_ladder(ticket(tmp_path), tiers=tiers, runner=runner)
+    assert routed.outcome == work.PROVIDER_ERROR
+    assert routed.paid is False
+    assert len(seen) == 1
+
+
+def test_a_provider_error_can_still_reach_the_next_FREE_tier(tmp_path):
+    runner, seen = ladder(work.PROVIDER_ERROR, work.PASS)
+    tiers = [
+        {"tier": route.LOCAL, "model": "fast", "protocol": "A", "attempts": 1},
+        {"tier": route.LOCAL_STRONG, "model": "strong", "protocol": "A", "attempts": 1},
+    ]
+    routed = route.run_with_ladder(ticket(tmp_path), tiers=tiers, runner=runner)
+    assert routed.outcome == work.PASS
+    assert [m for m, _ in seen] == ["fast", "strong"]
+    assert routed.paid is False
+
+
+def test_a_non_discriminating_ticket_abandons_immediately(tmp_path):
+    """Unlike a provider error: no tier, free or paid, turns a non-task into a
+    task. Asking again is asking the same question."""
+    runner, seen = ladder(work.NON_DISCRIMINATING, work.PASS, work.PASS)
+    tiers = [
+        {"tier": route.LOCAL, "model": "fast", "protocol": "A", "attempts": 3},
+        {"tier": route.LOCAL_STRONG, "model": "strong", "protocol": "A", "attempts": 1},
+    ]
+    routed = route.run_with_ladder(ticket(tmp_path), tiers=tiers, runner=runner)
+    assert routed.outcome == work.NON_DISCRIMINATING
+    assert len(seen) == 1
