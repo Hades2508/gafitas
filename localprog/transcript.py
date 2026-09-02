@@ -201,10 +201,15 @@ class Transcript:
 #: system prompt by the server.
 CHARS_PER_TOKEN = 3.0
 
-#: How much of the context window the transcript may occupy. The rest is
-#: headroom for the tool schema (about 1.5 k tokens for nine documented tools),
-#: the system prompt, and the reply the model is about to generate.
-CONTEXT_FRACTION = 0.55
+#: Tokens held back beyond the measured schema, prompt and reply. Covers the
+#: per-message scaffolding and the fact that CHARS_PER_TOKEN is an estimate
+#: which is wrong in the expensive direction on dense code.
+SAFETY_MARGIN_TOKENS = 1500
+
+#: Never squeeze the transcript below this, whatever the arithmetic says. A
+#: window too small to hold a conversation should fail loudly when the provider
+#: rejects the request, not quietly by giving the agent amnesia.
+MIN_BUDGET_TOKENS = 2000
 
 #: A tool-call ARGUMENT longer than this is summarised once it is old. The call
 #: itself -- name, and the shape of its arguments -- is never removed.
@@ -219,8 +224,37 @@ ARGUMENT_ELIDE_OVER_CHARS = 400
 MAX_PAYLOAD_CHARS = 14000
 
 
-def budget_chars(num_ctx: int) -> int:
-    return int(num_ctx * CONTEXT_FRACTION * CHARS_PER_TOKEN)
+def budget_chars(
+    num_ctx: int,
+    *,
+    reserve_tokens: int | None = None,
+    num_predict: int = 0,
+    schema_chars: int = 0,
+    system_chars: int = 0,
+) -> int:
+    """How many characters of transcript fit in *num_ctx*, honestly computed.
+
+    F-53. This used to be ``num_ctx * 0.55 * 3`` -- a fraction chosen when the
+    window was 16k and the tool schema took a large slice of it. At 32k the same
+    fraction reserves about 15k tokens for a schema costing ~2k, a system prompt
+    of ~1k and a reply capped at num_predict. Roughly 8k of that reservation
+    protects nothing, and it was precisely the 8k an agent needed: measured, the
+    9B's prompt never passed 17k of an available 32k while it spent 28 of 40
+    turns re-reading files the budget had just discarded.
+
+    Everything the reservation must cover is knowable, so it is measured:
+    the schema and system prompt as they actually are, plus the reply we asked
+    for, plus a margin for the message scaffolding and for tokenisation being
+    worse than the estimate. What is left belongs to the transcript.
+    """
+    if reserve_tokens is None:
+        reserve_tokens = (
+            int((schema_chars + system_chars) / CHARS_PER_TOKEN)
+            + max(num_predict, 1024)
+            + SAFETY_MARGIN_TOKENS
+        )
+    usable = max(num_ctx - reserve_tokens, MIN_BUDGET_TOKENS)
+    return int(usable * CHARS_PER_TOKEN)
 
 
 def _shrink_arguments(arguments, limit: int):

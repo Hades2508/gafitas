@@ -255,12 +255,42 @@ def test_budget_zero_disables_the_second_pass_entirely():
     assert rendered.count("A" * 5000) == 9
 
 
-def test_budget_chars_scales_with_the_context_window():
-    small = transcript.budget_chars(8192)
-    large = transcript.budget_chars(32768)
-    assert abs(large - small * 4) <= 4  # integer truncation, nothing more
-    # And it must leave real headroom for the schema, the prompt and the reply.
-    assert small < 8192 * transcript.CHARS_PER_TOKEN
+def test_the_budget_reserves_what_it_measures_and_no_more():
+    """F-53. The reservation used to be a flat 45% of the window, chosen when
+    that window was 16k and the schema was a large slice of it. At 32k it held
+    back ~15k tokens for a schema costing ~2k -- and the 9B then spent 28 of 40
+    turns re-reading files that reservation had discarded, while its prompt
+    never passed 17k of an available 32k."""
+    schema, system, predict = 8000, 2000, 4096
+    budget = transcript.budget_chars(
+        32768, num_predict=predict, schema_chars=schema, system_chars=system
+    )
+    reserved = 32768 - budget / transcript.CHARS_PER_TOKEN
+    measured = (schema + system) / transcript.CHARS_PER_TOKEN + predict
+    # Everything held back is either measured or the declared safety margin.
+    assert measured <= reserved <= measured + transcript.SAFETY_MARGIN_TOKENS + 1
+
+
+def test_a_bigger_window_gives_proportionally_more_than_it_reserves():
+    """The reservation is fixed cost; doubling the window should nearly double
+    the usable transcript, not scale it by a constant fraction."""
+    args = dict(num_predict=4096, schema_chars=8000, system_chars=2000)
+    small = transcript.budget_chars(16384, **args)
+    large = transcript.budget_chars(32768, **args)
+    assert large > small * 2
+
+
+def test_the_budget_never_collapses_to_nothing():
+    """A window too small to hold a conversation must fail loudly at the
+    provider, not quietly by giving the agent amnesia."""
+    tiny = transcript.budget_chars(2048, num_predict=4096, schema_chars=8000, system_chars=2000)
+    assert tiny == int(transcript.MIN_BUDGET_TOKENS * transcript.CHARS_PER_TOKEN)
+
+
+def test_an_explicit_reserve_overrides_the_measurement():
+    assert transcript.budget_chars(10000, reserve_tokens=1000) == int(
+        9000 * transcript.CHARS_PER_TOKEN
+    )
 
 
 # --------------------------------------------- frozen instruments (F-20/F-21)

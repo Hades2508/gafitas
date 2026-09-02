@@ -390,7 +390,13 @@ def run_ticket(
             system=system_prompt(ticket, protocol), objective=objective_text(ticket),
             protocol_name=protocol, max_turns=ticket.max_turns,
             keep_turns=WORK_KEEP_TURNS, elide_over_chars=WORK_ELIDE_OVER_CHARS,
-            budget_chars=budget_chars(num_ctx),
+            budget_chars=budget_chars(
+                num_ctx,
+                num_predict=WORK_NUM_PREDICT,
+                schema_chars=len(json.dumps(tools.native_schema()))
+                if protocol == "A" else 0,
+                system_chars=len(system_prompt(ticket, protocol)),
+            ),
         )
 
         result.loop_outcome = outcome.outcome
