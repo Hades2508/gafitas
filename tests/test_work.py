@@ -742,3 +742,93 @@ def test_retried_attempts_do_not_overwrite_each_others_evidence(repo, tmp_path):
         )
     sealed = sorted((out / "tickets").glob("T1_fake*.json"))
     assert len(sealed) == 3, f"expected three sealed attempts, found {[p.name for p in sealed]}"
+
+
+# ------------------------------------------------------------------ F-57
+
+
+def test_a_ticket_with_no_declared_tests_still_runs_the_model(repo, tmp_path):
+    """Caught by the SWE-bench smoke, and it would have voided the whole run.
+
+    check_pre with an empty acceptance list becomes pytest with no node ids --
+    the WHOLE repository suite, treated as the acceptance. On a project whose
+    suite is green at its base commit that returns NON_DISCRIMINATING and the
+    model is never invoked. Across 500 instances: 500 empty patches and a 0%
+    score caused entirely by us.
+    """
+    provider_seen = {}
+
+    def watcher(_model):
+        provider = FakeProvider([
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("finish", summary="arreglado", status="DONE"),
+        ])
+        provider_seen["p"] = provider
+        return provider
+
+    result = work.run_ticket(
+        ticket(repo, acceptance_tests=(), full_suite=False), "fake",
+        provider_factory=watcher, out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert provider_seen["p"].calls, "the model must be invoked"
+    assert result.outcome == work.CANDIDATE
+    assert result.changed_files == ["pkg/calc.py"]
+
+
+def test_a_candidate_is_not_a_pass(repo, tmp_path):
+    """Nothing checked whether it is right. The signals that ran only show it
+    did not obviously break anything, and calling that a pass would be
+    'tests green = success' with the tests missing too."""
+    result = work.run_ticket(
+        ticket(repo, acceptance_tests=(), full_suite=False), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 999"),
+            tc("finish", summary="creo", status="DONE"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert result.outcome == work.CANDIDATE
+    assert result.outcome != work.PASS
+    assert any("NO afirma que sea correcto" in n for n in result.notes)
+
+
+def test_no_declared_tests_and_no_change_is_not_a_candidate(repo, tmp_path):
+    result = work.run_ticket(
+        ticket(repo, acceptance_tests=(), full_suite=False), "fake",
+        provider_factory=scripted(
+            tc("finish", summary="no encuentro nada", status="BLOCKED"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert result.outcome == work.FAIL
+
+
+def test_the_discrimination_signal_is_absent_when_nothing_declares_it(repo, tmp_path):
+    """A signal that always returns INCONCLUSIVE would block every
+    externally-judged ticket for the crime of being one."""
+    result = work.run_ticket(
+        ticket(repo, acceptance_tests=(), full_suite=False), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("finish", summary="hecho", status="DONE"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    names = {s["name"] for s in result.conscience["signals"]}
+    assert "acceptance_discriminates" not in names
+    assert "scope_respected" in names
+
+
+def test_scope_is_still_enforced_without_declared_tests(repo, tmp_path):
+    """Losing the acceptance gate must not lose containment with it."""
+    result = work.run_ticket(
+        ticket(repo, acceptance_tests=(), full_suite=False), "fake",
+        provider_factory=scripted(
+            tc("write_file", path="../escaped.py", content="X = 1\n"),
+            tc("finish", summary="no pude", status="BLOCKED"),
+            tc("finish", summary="no pude", status="BLOCKED"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert not (repo.parent / "escaped.py").exists()
+    assert result.changed_files == []

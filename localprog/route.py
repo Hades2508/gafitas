@@ -60,8 +60,10 @@ FREE_TIERS = frozenset({LOCAL, LOCAL_STRONG})
 #: The agent tried and did not manage it. A stronger model may.
 ESCALATABLE = frozenset({work.FAIL, work.BLOCKED_BY_CONSCIENCE})
 
-#: Usable work. Stop and keep it.
-SUCCESSFUL = frozenset({work.PASS, work.PASS_UNCONFIRMED})
+#: Usable work. Stop and keep it. CANDIDATE is included because retrying
+#: it would mean discarding a real change on the grounds that we could
+#: not check it -- and we could not check the next one either.
+SUCCESSFUL = frozenset({work.PASS, work.PASS_UNCONFIRMED, work.CANDIDATE})
 
 #: Nobody's model can fix these, so spending on a better one is waste.
 TERMINAL = frozenset({work.NON_DISCRIMINATING, work.PROVIDER_ERROR, work.HARNESS_INVALID})
@@ -146,6 +148,9 @@ def should_escalate(outcome: str) -> bool:
 
 
 def explain(outcome: str) -> str:
+    if outcome == work.CANDIDATE:
+        return ("hay un candidato real; quien lo juzga es externo, y otro intento "
+                "no lo haria mas comprobable.")
     if outcome in SUCCESSFUL:
         return "el trabajo sirve; no hay nada que ganar pagando otro modelo."
     if outcome in ESCALATABLE:

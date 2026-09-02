@@ -59,6 +59,11 @@ PASS_UNCONFIRMED = "PASS_UNCONFIRMED"
 BLOCKED_BY_CONSCIENCE = "BLOCKED_BY_CONSCIENCE"   # suite green, a signal refused it
 FAIL = "FAIL"                              # honest miss: PRE failed, POST still fails
 NON_DISCRIMINATING = "NON_DISCRIMINATING"  # the ticket was not a task
+#: The ticket declared no acceptance tests, so nothing here can say whether
+#: the work is right -- something outside decides (a benchmark harness, a
+#: reviewer, CI). A real change was produced and was not shown to be
+#: correct. Deliberately NOT a pass (F-57).
+CANDIDATE = "CANDIDATE"
 PROVIDER_ERROR = "PROVIDER_ERROR"          # infrastructure, never a model result
 HARNESS_INVALID = "HARNESS_INVALID"        # our own defect
 
@@ -345,7 +350,22 @@ def run_ticket(
     preserve = True
     try:
         # ---------------- PRE: what does this tree do right now? ----------
-        pre_disc = verify.check_pre(box.path, ticket.acceptance_tests)
+        # F-57: with no declared acceptance, check_pre would run pytest with no
+        # node ids -- the WHOLE repository suite, treated as the acceptance. On
+        # a project whose suite is green at the base commit that returns
+        # NON_DISCRIMINATING and the model is never invoked at all. There is
+        # nothing to gate on here, so the gate does not run.
+        judged_here = bool(ticket.acceptance_tests)
+        pre_disc = (
+            verify.check_pre(box.path, ticket.acceptance_tests)
+            if judged_here
+            else verify.Discrimination(
+                verify.UNKNOWN,
+                verify.SuiteResult(False, None, False, "(no acceptance declared)", 0.0),
+                None,
+                "el ticket no declara tests de aceptacion: lo juzga algo externo.",
+            )
+        )
         pre_full = (
             verify.run_suite(box.path) if ticket.full_suite
             else verify.SuiteResult(False, None, False, "(full_suite disabled)", 0.0)
@@ -354,7 +374,7 @@ def run_ticket(
         pre_files = _tracked_files(box.path)
 
         # ---------------- the gate. Before spending a single token. -------
-        if not pre_disc.measurable:
+        if judged_here and not pre_disc.measurable:
             result.outcome = NON_DISCRIMINATING
             result.loop_outcome = "(not run)"
             result.scoreable = False
@@ -459,7 +479,11 @@ def run_ticket(
         )
 
         # ---------------- POST: what does it do now? ----------------------
-        post_disc = verify.check_post(pre_disc, box.path, ticket.acceptance_tests)
+        post_disc = (
+            verify.check_post(pre_disc, box.path, ticket.acceptance_tests)
+            if judged_here
+            else pre_disc
+        )
         post_full = (
             verify.run_suite(box.path) if ticket.full_suite
             else verify.SuiteResult(False, None, False, "(full_suite disabled)", 0.0)
@@ -470,12 +494,17 @@ def run_ticket(
         # ---------------- the conscience ----------------------------------
         # Only deterministic evidence about the CODE goes in here. What the
         # agent believes about its own work is reported separately (F-24).
-        conscience = verify.Conscience([
-            verify.signal_discrimination(post_disc),
+        signals = [
             verify.signal_acceptance_untouched(ticket.acceptance_tests, changed),
             verify.signal_scope_respected(changed, ticket.scope),
             verify.signal_public_surface(pre_surface, post_surface),
-        ])
+        ]
+        if judged_here:
+            # Without a declared acceptance there is nothing to discriminate,
+            # and a signal that always returns INCONCLUSIVE would block every
+            # externally-judged ticket for the crime of being one.
+            signals.insert(0, verify.signal_discrimination(post_disc))
+        conscience = verify.Conscience(signals)
         agent_signal = verify.signal_agent_reported(ctx.finish_status, ctx.finish_summary)
         result.agent_report = agent_signal.to_dict()
         if ticket.full_suite:
@@ -491,7 +520,20 @@ def run_ticket(
         # is one signal among several and cannot carry the decision.
         result.scoreable = True
         confirmed = ctx.finish_status in ("DONE", "NO_CHANGE")
-        if post_disc.status != verify.DISCRIMINATED:
+        if not judged_here:
+            # F-57. Nothing here has shown the work is correct. The signals that
+            # did run only show it did not obviously break anything, and calling
+            # that a pass would be "tests green = success" with the tests
+            # missing too.
+            result.outcome = CANDIDATE if changed else FAIL
+            result.notes.append(
+                "sin tests de aceptacion declarados: GAFITAS entrega un CANDIDATO "
+                "y NO afirma que sea correcto. Lo juzga el evaluador externo."
+                if changed else
+                "sin tests de aceptacion declarados y sin ningun cambio: no hay "
+                "candidato que entregar."
+            )
+        elif post_disc.status != verify.DISCRIMINATED:
             result.outcome = FAIL
         elif conscience.verdict != verify.PASS:
             result.outcome = BLOCKED_BY_CONSCIENCE
@@ -512,7 +554,7 @@ def run_ticket(
         patch = _make_patch(box.path, changed)
         result.wall_seconds = time.perf_counter() - started
         result.patch_path = _seal(out_dir, ticket, result, outcome.events, patch)
-        preserve = result.outcome not in (PASS, PASS_UNCONFIRMED)
+        preserve = result.outcome not in (PASS, PASS_UNCONFIRMED, CANDIDATE)
         return result
     finally:
         box.dispose(preserve=preserve)

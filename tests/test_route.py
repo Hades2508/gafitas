@@ -87,8 +87,9 @@ def test_every_work_outcome_is_classified():
     """A new outcome that nobody classified would silently fall through to
     'do not escalate', which is the quiet-failure direction."""
     every = {
-        work.PASS, work.PASS_UNCONFIRMED, work.FAIL, work.BLOCKED_BY_CONSCIENCE,
-        work.NON_DISCRIMINATING, work.PROVIDER_ERROR, work.HARNESS_INVALID,
+        work.PASS, work.PASS_UNCONFIRMED, work.CANDIDATE, work.FAIL,
+        work.BLOCKED_BY_CONSCIENCE, work.NON_DISCRIMINATING,
+        work.PROVIDER_ERROR, work.HARNESS_INVALID,
     }
     covered = route.SUCCESSFUL | route.ESCALATABLE | route.TERMINAL
     assert every == covered, f"unclassified: {every ^ covered}"
