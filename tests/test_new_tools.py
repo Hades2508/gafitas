@@ -501,10 +501,42 @@ def test_read_symbol_returns_one_function_with_real_line_numbers(ctx):
     assert "lineas 1-2" in out.value
 
 
-def test_read_symbol_line_numbers_feed_replace_lines(ctx):
-    """The two tools are meant to compose: find it, then change it."""
+def test_read_symbol_returns_the_source_verbatim(ctx):
+    """F-64: the code comes back exactly as it is in the file.
+
+    The commonest thing done with a symbol's source is to reproduce it --
+    into edit's `old`, or into a new file -- and a number-and-tab prefix on
+    every line moves the indentation off the left margin and makes that a
+    transcription exercise. Measured, the same model reproduced a function
+    byte for byte 72% of the time when handed it as plain text and 30% when
+    it came back through the tools, six of the differences being indentation
+    alone.
+    """
+    source = (repo_root := ctx.root) / "pkg" / "mod.py"
     out = call(ctx, "read_symbol", path="pkg/mod.py", name="double")
-    assert "   1\t" in out.value and "   2\t" in out.value
+    body = out.value.split("literalmente.", 1)[1].lstrip("\n")
+    assert body in source.read_text(encoding="utf-8"), (
+        "what came back is not a substring of the file it came from"
+    )
+    assert "\t" not in body and not body.lstrip().startswith("1")
+    assert repo_root.is_dir()
+
+
+def test_read_symbol_keeps_the_indentation_of_a_method(ctx, repo):
+    """The case that was actually being lost: a method four spaces in."""
+    (repo / "pkg" / "deep.py").write_text(
+        "class A:\n    def metodo(self):\n        return 1\n", encoding="utf-8")
+    out = call(ctx, "read_symbol", path="pkg/deep.py", name="A.metodo")
+    body = out.value.split("literalmente.", 1)[1].lstrip("\n")
+    assert body.startswith("    def metodo"), repr(body)
+    assert "        return 1" in body
+
+
+def test_read_symbol_still_states_the_range_for_replace_lines(ctx):
+    """The numbers are not lost, they move to the header -- which is the
+    shape replace_lines consumes: a start and an end, not one per line."""
+    out = call(ctx, "read_symbol", path="pkg/mod.py", name="double")
+    assert "lineas 1-2" in out.value
     assert call(ctx, "replace_lines", path="pkg/mod.py", start=1, end=2,
                 content="def double(n):\n    return n + n").ok
 

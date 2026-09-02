@@ -315,3 +315,151 @@ def test_broken_python_is_still_a_syntax_error(tmp_path):
     ctx = tools.ToolContext(root=tmp_path)
     out = tools.dispatch(ctx, "list_symbols", {"path": "b.py"})
     assert out.code == "ERROR_SYNTAX"
+
+
+# --------------------------------------- the write channel does not corrupt
+
+#: A real function body with its newlines escaped, at the size the six observed
+#: cases actually had. The guard deliberately ignores short payloads.
+ESCAPED_BODY = (
+    "def parse_header(raw, strict=False):" + chr(92) + "n"
+    "    if not raw:" + chr(92) + "n"
+    "        raise ValueError('empty header')" + chr(92) + "n"
+    "    name, _, value = raw.partition(':')" + chr(92) + "n"
+    "    if strict and not value:" + chr(92) + "n"
+    "        raise ValueError('header without a value')" + chr(92) + "n"
+    "    return name.strip(), value.strip()" + chr(92) + "n"
+)
+
+def test_escaped_newlines_are_repaired_and_the_repair_is_announced(tmp_path):
+    """F-63. A tool call carries its arguments as JSON, and a small model
+    writing a multi-line body into a JSON string sometimes escapes it twice, so
+    what arrives is one physical line of literal backslash-n. The harness used
+    to write that out exactly as given, without a word.
+
+    The first fix refused it, on the principle that a write tool which edits
+    what it is handed is worse than one that says no. Measured, that cost more
+    than it saved: one matched run spent five turns being refused and finished
+    BLOCKED holding the correct answer, because the model could not produce the
+    unescaped form at all. So it is repaired -- and the result says so, which
+    is the part that keeps it honest.
+    """
+    ctx = tools.ToolContext(root=tmp_path, write_scope=("**/*.py",),
+                            allowed_new_files=("a.txt",))
+    out = tools.dispatch(ctx, "write_file", {"path": "a.txt", "content": ESCAPED_BODY})
+    assert out.ok
+    written = (tmp_path / "a.txt").read_text(encoding="utf-8")
+    assert written.count("\n") >= 6, "the body came back as real lines"
+    assert chr(92) + "n" not in written
+    assert "DESESCAPADO" in out.value, "a silent repair is the thing to avoid"
+
+
+def test_real_newlines_are_written_untouched(tmp_path):
+    ctx = tools.ToolContext(root=tmp_path, write_scope=("**/*.py",))
+    body = "def f():\n    return 1\n"
+    assert tools.dispatch(ctx, "write_file", {"path": "a.py", "content": body}).ok
+    assert (tmp_path / "a.py").read_text(encoding="utf-8") == body
+
+
+def test_a_genuine_one_liner_with_escapes_still_goes_through(tmp_path):
+    """Refuse the conclusive case only.
+
+    ``sep = "\\n\\n"`` is real code: one line, no newline in it, two
+    escape sequences. An audit raised it as a false positive and it was, so the
+    guard now also requires the payload to be long enough that it can only be a
+    flattened body. A write tool that rewrites what it is handed is worse than
+    one that says no, and one that refuses valid code is worse than both.
+    """
+    ctx = tools.ToolContext(root=tmp_path, write_scope=("**/*.py",))
+    ok = 'sep = "' + chr(92) + 'n' + chr(92) + 'n"'
+    assert tools.dispatch(ctx, "write_file", {"path": "c.py", "content": ok}).ok
+    assert (tmp_path / "c.py").read_text(encoding="utf-8").startswith("sep =")
+
+
+def test_edit_repairs_an_escaped_needle_so_it_can_match(tmp_path):
+    """An escaped `old` never matches, and 'no se encontro el texto' sends the
+    agent looking for a problem in the file instead of in its own call."""
+    body = ESCAPED_BODY.replace(chr(92) + "n", "\n")
+    (tmp_path / "m.py").write_text(body, encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path, write_scope=("**/*.py",))
+    out = tools.dispatch(ctx, "edit", {
+        "path": "m.py", "old": ESCAPED_BODY, "new": "def parse_header():\n    pass\n",
+    })
+    assert out.ok, out.feedback
+    assert "DESESCAPADO" in out.value
+    assert "def parse_header():" in (tmp_path / "m.py").read_text(encoding="utf-8")
+
+
+# ------------------------------------------------ the index tells the truth
+
+def test_a_write_outside_the_edit_tools_still_invalidates_the_index(tmp_path):
+    """The cache used to be keyed on ``changed_files`` alone, and nothing but
+    the edit tools updates that set -- so a file written by
+    ``run(["python", "-c", ...])`` left search_code answering out of a
+    repository that no longer existed, with the same confidence as a correct
+    answer."""
+    (tmp_path / "a.py").write_text("def alpha():\n    pass\n", encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    first = ctx.index()
+    assert ctx.index() is first
+    (tmp_path / "b.py").write_text("def beta():\n    pass\n", encoding="utf-8")
+    assert ctx.index() is not first, "a file appeared and the index never noticed"
+    assert any(r.path == "b.py" for r in ctx.index().regions)
+
+
+def test_the_index_does_not_follow_a_symlink_out_of_the_repository(tmp_path):
+    """Containment is a property of this harness, and rglob follows symlinked
+    directories. A link pointing outside would pull foreign files into the
+    index and hand their contents back through search_code."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("def confidential():\n    pass\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "own.py").write_text("def mine():\n    pass\n", encoding="utf-8")
+    try:
+        (repo / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform will not create symlinks without privileges")
+    paths = {r.path for r in retrieval.Index(repo).regions}
+    assert paths == {"own.py"}, paths
+
+
+def test_a_decorated_function_is_one_region_not_two(tmp_path):
+    """A decorator is the start of the thing it decorates. Left standalone it
+    becomes a one-line document saying '@property' while the function it
+    belongs to sits in a second document that no longer mentions it."""
+    (tmp_path / "m.py").write_text(
+        "@property\n"
+        "def cached_width(self):\n"
+        '    """The width of the rendered column."""\n'
+        "    return self._width\n",
+        encoding="utf-8",
+    )
+    regions = retrieval.Index(tmp_path).regions
+    owning = [r for r in regions if r.start <= 2 <= r.end]
+    assert len(owning) == 1, [(r.start, r.end, r.header) for r in regions]
+    assert owning[0].start == 1, "the decorator belongs to the function below it"
+
+
+def test_a_ranged_read_says_when_it_spans_two_definitions(tmp_path):
+    """F-65: a run copied its target function plus the opening lines of the
+    next one, because it guessed a line range instead of naming the symbol, and
+    scored 0.38 on an answer it believed was exact. The boundary was one parse
+    away and nobody mentioned it."""
+    (tmp_path / "m.py").write_text(
+        "def first(a):\n    return a\n\n\ndef second(b):\n    return b\n",
+        encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_file", {"path": "m.py", "start": 1, "end": 6})
+    assert "definicion(es)" in out.value and "read_symbol" in out.value
+
+
+def test_an_ordinary_ranged_read_is_left_alone(tmp_path):
+    """A note on every read is noise the agent learns to skip, which is how a
+    useful note stops being read at all."""
+    (tmp_path / "m.py").write_text(
+        "def only(a):\n    return a\n", encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_file", {"path": "m.py", "start": 1, "end": 2})
+    assert "definicion(es)" not in out.value

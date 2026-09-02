@@ -181,6 +181,13 @@ ERROR_RESULT_TRUNCATED = "ERROR_RESULT_TRUNCATED"
 #: and an agent that believes it will go looking for a bug that is not there.
 ERROR_LANGUAGE_UNSUPPORTED = "ERROR_LANGUAGE_UNSUPPORTED"
 
+#: The content arrived with its newlines escaped: one physical line carrying
+#: literal backslash-n. Writing it produces a file that is one long line of
+#: backslashes, which is never what was meant and which nothing downstream can
+#: parse. Refused rather than repaired -- guessing at intent inside a file
+#: write is how you corrupt the one case where the model meant it.
+ERROR_ESCAPED_CONTENT = "ERROR_ESCAPED_CONTENT"
+
 TOOL_ERROR_CODES = frozenset({
     ERROR_PATH_OUTSIDE_REPO,
     ERROR_FILE_NOT_FOUND,

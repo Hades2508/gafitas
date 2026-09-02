@@ -45,6 +45,7 @@ pass over the repository with no third-party dependency and no GPU.
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -201,6 +202,29 @@ def _split_regions(text: str, family: str | None) -> list[tuple[int, int]]:
         return [(i + 1, min(i + MAX_REGION_LINES, len(lines)))
                 for i in range(0, len(lines), MAX_REGION_LINES)]
 
+    # A decorator line is the start of the thing it decorates, not a region of
+    # its own: leaving it standalone produces a one-line document consisting of
+    # "@property" and pushes the function it belongs to into a second document
+    # that no longer mentions it.
+    merged: list[tuple[int, int]] = []
+    for n, (idx, indent) in enumerate(starts):
+        decorator = lines[idx].lstrip().startswith(("@", "#["))
+        if decorator and n + 1 < len(starts) and starts[n + 1][1] == indent:
+            continue
+        if merged and decorator:
+            continue
+        merged.append((idx, indent))
+    if merged:
+        # keep the decorator's own line as the start of the merged region
+        rebuilt = []
+        for idx, indent in merged:
+            back = idx
+            while back > 0 and lines[back - 1].lstrip().startswith(("@", "#[")) \
+                    and len(lines[back - 1]) - len(lines[back - 1].lstrip()) == indent:
+                back -= 1
+            rebuilt.append((back, indent))
+        starts = rebuilt
+
     regions: list[tuple[int, int]] = []
     if starts[0][0] > 0:
         regions.append((1, starts[0][0]))
@@ -229,6 +253,32 @@ def _preview(lines: list[str], start: int, end: int, limit: int = 3) -> str:
     return " ".join(out)[:320]
 
 
+def walk_files(root: Path, skip_dirs=DEFAULT_SKIP_DIRS):
+    """Every ordinary file under *root*, pruning as it goes. Sorted, so the
+    index is byte-identical between runs on the same tree.
+
+    ``os.walk`` rather than ``rglob`` for two reasons, both of which cost real
+    time or real safety:
+
+    * it does not descend into symlinked directories, and a link pointing out of
+      the repository would otherwise pull foreign files into the index and hand
+      their contents back through ``search_code``. Containment is a property of
+      this harness, not a detail of the walk.
+    * it lets a skipped directory be pruned instead of walked and then filtered.
+      Checking every ancestor of every file for a symlink cost six times the
+      build time of the whole index; pruning costs nothing.
+    """
+    for current, dirs, names in os.walk(root, followlinks=False):
+        here = Path(current)
+        dirs[:] = sorted(d for d in dirs
+                         if d not in skip_dirs and not (here / d).is_symlink())
+        for name in sorted(names):
+            path = here / name
+            if path.is_symlink():
+                continue
+            yield path
+
+
 class Index:
     """A BM25 index over one repository's code regions.
 
@@ -249,11 +299,7 @@ class Index:
         self.extensions_seen: Counter = Counter()
         docs: list[list[str]] = []
 
-        for path in sorted(root.rglob("*")):
-            if not path.is_file():
-                continue
-            if any(part in skip_dirs for part in path.parts):
-                continue
+        for path in walk_files(root, skip_dirs):
             suffix = path.suffix.lower()
             self.extensions_seen[suffix] += 1
             if suffix not in extensions:

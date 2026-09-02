@@ -37,6 +37,7 @@ from .errors import (
     ERROR_COMMAND_NOT_ALLOWED,
     ERROR_EMPTY_DIRECTORY,
     ERROR_EMPTY_OLD,
+    ERROR_ESCAPED_CONTENT,
     ERROR_FILE_EXISTS,
     ERROR_FILE_NOT_FOUND,
     ERROR_IS_DIRECTORY,
@@ -61,6 +62,10 @@ from .errors import (
 )
 
 MAX_READ_LINES = 2000
+#: Spelled out rather than written inline, so a literal backslash in this
+#: file's own source can never be mistaken for one in the model's payload.
+NEWLINE = chr(10)
+BACKSLASH_N = chr(92) + "n"
 HEAD_LINES = 200
 
 #: Hard ceiling on what any single tool may return, in characters (F-25).
@@ -196,9 +201,37 @@ class ToolContext:
             self._scope = WriteScope(tuple(self.write_scope), tuple(self.allowed_new_files))
         return self._scope
 
+    def _tree_fingerprint(self) -> tuple:
+        """A cheap stamp of what the tree looks like right now.
+
+        Keying the cache on ``changed_files`` alone was wrong, and wrong in the
+        direction that matters: ``run(["python", "-c", ...])`` can write
+        anything, and nothing outside the edit tools updates that set. A search
+        served out of an index built before those writes describes a repository
+        that no longer exists, and says so with the same confidence as a correct
+        one.
+
+        Counted, not hashed: file count, newest mtime and total size. One stat
+        per file, no reads, and it moves whenever a write does.
+        """
+        count = 0
+        newest = 0.0
+        total = 0
+        for path in retrieval.walk_files(
+            self.root, frozenset(retrieval.DEFAULT_SKIP_DIRS | SKIP_DIRS)
+        ):
+            try:
+                info = path.stat()
+            except OSError:
+                continue
+            count += 1
+            total += info.st_size
+            newest = max(newest, info.st_mtime)
+        return (count, total, round(newest, 3), frozenset(self.changed_files))
+
     def index(self) -> "retrieval.Index":
-        """The retrieval index for this repository, built at most once per edit."""
-        key = frozenset(self.changed_files)
+        """The retrieval index for this repository, rebuilt when the tree moves."""
+        key = self._tree_fingerprint()
         if self._index is None or self._index_key != key:
             self._index = retrieval.Index(self.root, skip_dirs=frozenset(
                 retrieval.DEFAULT_SKIP_DIRS | SKIP_DIRS
@@ -311,6 +344,67 @@ def _read_text(rel: str, target: Path) -> str:
         raise ToolError(ERROR_FILE_NOT_FOUND, f"{rel!r}: {exc}") from None
 
 
+#: How many literal backslash-n sequences make a one-line payload conclusive.
+#: One could be a string constant in a genuine one-liner. Two, with no real
+#: newline anywhere, is a multi-line body that lost its newlines in transit.
+ESCAPED_NEWLINE_THRESHOLD = 2
+
+#: And how long the payload has to be before that is conclusive. A one-line
+#: assignment holding two newline escapes is real code; a function body that
+#: lost its newlines in transit is never this short. The six observed cases ran
+#: from 240 to 6600 characters.
+ESCAPED_MIN_CHARS = 120
+
+
+def _unescape_if_flattened(argument: str, text: Any) -> tuple[Any, str]:
+    """Repair content whose newlines arrived escaped, and say so (F-63).
+
+    A tool call carries its arguments as JSON, and a small model writing a
+    multi-line body into a JSON string sometimes escapes it twice. What arrives
+    is one physical line of literal backslash-n -- and the harness wrote it out
+    exactly like that, without a word.
+
+    Measured on the matched evaluation: 6 of 50 answers came out as a single
+    line of backslashes, against 1 of 50 when the same model on the same task
+    emitted the same code as plain text instead of through a tool argument.
+    That difference is the channel, which makes it ours.
+
+    This first refused, on the principle that a write tool which edits what it
+    is handed is worse than one that says no. Measured, that principle cost
+    more than it saved: of 50 matched cases, refusing removed five of the six
+    corrupted writes and turned one of them into a run that spent five turns
+    being told no and finished BLOCKED holding the correct answer. The model
+    could not produce the unescaped form, so "try again" was not a route.
+
+    So it is repaired -- and announced in the tool's own result, which is the
+    part that matters. The harness saying what it changed is not the same thing
+    as the harness changing it quietly, and the agent can read the file back.
+    The signal stays deliberately narrow: no real newline anywhere, at least two
+    escapes, and long enough that it can only be a flattened body.
+    """
+    if not isinstance(text, str) or NEWLINE in text:
+        return text, ""
+    count = text.count(BACKSLASH_N)
+    # Two escapes in a SHORT one-liner is ordinary code: ``sep = "\n\n"`` is a
+    # legitimate single-line replacement and must go through untouched. What is
+    # never ordinary is a whole body flattened onto one line, and that is always
+    # long. The bar keeps the guard on the case it was built for.
+    if count < ESCAPED_NEWLINE_THRESHOLD or len(text) < ESCAPED_MIN_CHARS:
+        return text, ""
+    repaired = (text.replace(BACKSLASH_N, NEWLINE)
+                    .replace(chr(92) + chr(92) + '"', '"')
+                    .replace(chr(92) + '"', '"')
+                    .replace(chr(92) + "t", chr(9)))
+    return repaired, (
+        f"{NEWLINE}[{ERROR_ESCAPED_CONTENT}: {argument} llego en UNA SOLA LINEA "
+        f"con {count} secuencias literales barra-n y ningun salto real, asi que "
+        f"lo he DESESCAPADO antes de escribirlo: ahora tiene "
+        f"{repaired.count(NEWLINE) + 1} lineas. En los argumentos de una "
+        f"herramienta el texto va TAL CUAL, sin escapar. Si querias barras "
+        f"invertidas de verdad, leelo y corrigelo.]"
+    )
+
+
 def _write_text(target: Path, text: str) -> None:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -342,6 +436,56 @@ def _check_writable(ctx: ToolContext, rel: str, *, creating: bool) -> None:
 
 
 # ---------------------------------------------------------------- the 7 tools
+
+
+def _range_note(rel: str, text: str, lo: int, hi: int) -> str:
+    """Say what a line range cuts through (F-65).
+
+    An agent that asks for lines 348-370 is guessing at where a definition
+    starts and stops, and when the guess is wrong the harness can see exactly
+    how: one run copied its target function plus the opening lines of the next
+    one and scored 0.38 on an answer it believed was exact. The boundaries were
+    one parse away and nobody mentioned them.
+
+    Language-agnostic, because it reuses the same declaration splitter the
+    retrieval index is built on -- a file we cannot carve simply gets no note
+    rather than a wrong one.
+    """
+    try:
+        family = retrieval._FAMILY.get("." + rel.rsplit(".", 1)[-1].lower())
+        regions = retrieval._split_regions(text, family)
+    except Exception:      # a note is a courtesy; it never breaks the read
+        return ""
+    if not regions or family is None:
+        return ""
+    lines = text.splitlines()
+
+    def declared(at: int) -> str:
+        return lines[at - 1].strip()[:70] if 1 <= at <= len(lines) else ""
+
+    covered = [(a, b) for a, b in regions if a <= hi and b >= lo]
+    if not covered:
+        return ""
+    # Speak only when the aim is unambiguously wrong: the range takes in more
+    # than one declaration (so copying it drags a neighbour along, which is the
+    # failure this exists for), or it begins inside one (so what comes back has
+    # no head). A range that merely stops short of the end is what was asked
+    # for, and saying so on every ordinary read is noise the agent learns to
+    # skip -- which is how a useful note stops being read at all.
+    starts_inside = covered[0][0] < lo
+    if len(covered) <= 1 and not starts_inside:
+        return ""
+    pieces = []
+    for a, b in covered[:6]:
+        mark = "" if a >= lo and b <= hi else "  (INCOMPLETA en este rango)"
+        pieces.append(f"    lineas {a}-{b}: {declared(a)}{mark}")
+    tail = f"{NEWLINE}    ... y {len(covered) - 6} mas" if len(covered) > 6 else ""
+    return (
+        f"{NEWLINE}[el rango {lo}-{hi} toca {len(covered)} definicion(es):{NEWLINE}"
+        + NEWLINE.join(pieces) + tail
+        + f"{NEWLINE}  Si querias UNA entera, read_symbol({rel!r}, '<nombre>') te da "
+          f"sus limites exactos.]"
+    )
 
 
 def read_file(ctx: ToolContext, path: Any, start: Any = None, end: Any = None) -> str:
@@ -384,6 +528,8 @@ def read_file(ctx: ToolContext, path: Any, start: Any = None, end: Any = None) -
     if len(body) > MAX_TOOL_PAYLOAD_CHARS:
         body = (body[:MAX_TOOL_PAYLOAD_CHARS]
                 + f"\n[truncado a {MAX_TOOL_PAYLOAD_CHARS} caracteres; pide un rango mas corto]")
+    if start is not None or end is not None:
+        body += _range_note(rel, text, lo, hi)
     return body
 
 
@@ -832,7 +978,23 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
     end = getattr(node, "end_lineno", None) or node.lineno
     lines = source.splitlines()
     end = min(end, len(lines))
-    body = "\n".join(f"{n:4}\t{lines[n - 1]}" for n in range(start, end + 1))
+    # VERBATIM, with no per-line numbering (F-64). read_symbol exists to hand
+    # back a symbol's source, and the commonest thing done with that source is
+    # to reproduce it exactly -- into edit's `old`, or into a new file. A
+    # right-aligned number and a tab on every line move the code's own
+    # indentation away from the left margin and turn 'copy this' into
+    # 'transcribe this, stripping a prefix' -- a job the harness invented and
+    # then made the model do.
+    #
+    # Measured on the matched evaluation, where the same model met the same
+    # file both ways: asked for the function as plain text it reproduced it
+    # byte for byte 72% of the time; reading it through the tools and writing
+    # it back, 30% -- and six of the differences were nothing but indentation.
+    #
+    # The line numbers are not lost. They are stated once in the header, which
+    # is the shape replace_lines actually consumes: a start and an end, not a
+    # number per line.
+    body = NEWLINE.join(lines[n - 1] for n in range(start, end + 1))
     if len(body) > MAX_TOOL_PAYLOAD_CHARS:
         kept = body[:MAX_TOOL_PAYLOAD_CHARS]
         shown = kept.count(chr(10)) + 1
@@ -840,7 +1002,11 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
             f"\n[{name} ocupa las lineas {start}-{end}; te muestro hasta la "
             f"{start + shown - 1}. Usa read_file('{rel}', start=, end=) para el resto]"
         )
-    return f"{rel}::{name}  (lineas {start}-{end})\n{body}"
+    return (
+        f"{rel}::{name}  (lineas {start}-{end}; la primera de abajo es la "
+        f"{start}). El codigo va TAL CUAL esta en el fichero, sin numerar: "
+        f"puedes copiarlo literalmente." + NEWLINE + body
+    )
 
 
 def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
@@ -848,6 +1014,9 @@ def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
     _check_writable(ctx, rel, creating=False)
     if not isinstance(old, str) or not isinstance(new, str):
         raise InvalidCall(ERROR_BAD_ARGUMENTS, "old y new deben ser cadenas")
+    old, old_note = _unescape_if_flattened("old", old)
+    new, new_note = _unescape_if_flattened("new", new)
+    escape_note = old_note + new_note
     if not old:
         raise ToolError(ERROR_EMPTY_OLD, "old no puede estar vacío. Para un fichero nuevo usa write_file.")
 
@@ -892,7 +1061,7 @@ def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
 
     _write_text(target, candidate)
     ctx.changed_files.add(rel)
-    return f"edit aplicada en {rel}"
+    return f"edit aplicada en {rel}" + escape_note
 
 
 def replace_lines(ctx: ToolContext, path: Any, start: Any, end: Any, content: Any) -> str:
@@ -921,6 +1090,7 @@ def replace_lines(ctx: ToolContext, path: Any, start: Any, end: Any, content: An
     _check_writable(ctx, rel, creating=False)
     if not isinstance(content, str):
         raise InvalidCall(ERROR_BAD_ARGUMENTS, "content debe ser una cadena")
+    content, escape_note = _unescape_if_flattened("content", content)
     for name, value in (("start", start), ("end", end)):
         if not isinstance(value, int) or isinstance(value, bool):
             raise InvalidCall(ERROR_BAD_ARGUMENTS, f"{name} debe ser un entero (linea, empezando en 1)")
@@ -962,7 +1132,7 @@ def replace_lines(ctx: ToolContext, path: Any, start: Any, end: Any, content: An
     ctx.changed_files.add(rel)
     replaced = stop - start + 1
     written = body.count("\n")
-    return f"replace_lines: {rel} lineas {start}-{stop} ({replaced}) sustituidas por {written} lineas"
+    return f"replace_lines: {rel} lineas {start}-{stop} ({replaced}) sustituidas por {written} lineas" + escape_note
 
 
 def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
@@ -970,6 +1140,7 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
     _check_writable(ctx, rel, creating=True)
     if not isinstance(content, str):
         raise InvalidCall(ERROR_BAD_ARGUMENTS, "content debe ser una cadena")
+    content, escape_note = _unescape_if_flattened("content", content)
     if target.exists():
         raise ToolError(ERROR_FILE_EXISTS, f"{rel!r} ya existe. Usa edit.")
     if rel.endswith(".py"):
@@ -986,7 +1157,7 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
             raise ToolError(ERROR_SYNTAX_AFTER_EDIT, f"{rel!r}: {exc}. NO se ha escrito nada.") from None
     _write_text(target, content)
     ctx.changed_files.add(rel)
-    return f"write_file aplicada en {rel}"
+    return f"write_file aplicada en {rel}" + escape_note
 
 
 def list_dir(ctx: ToolContext, path: Any = ".", recursive: Any = False) -> dict:
