@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from localprog import repoqa  # noqa: E402
+from localprog import repoqa, work  # noqa: E402
 
 NEEDLE = {
     "name": "_merge_string_group",
@@ -246,3 +246,50 @@ def test_a_path_added_by_the_adapter_is_still_caught():
     )
     with pytest.raises(ValueError, match="LEAK"):
         repoqa.assert_no_leak(needle, leaked)
+
+
+def test_a_short_needle_name_is_not_matched_inside_a_tool_name():
+    """The guard has now killed two runs, both the same mistake.
+
+    A needle named 'is' occurs inside 'list_dir' and 'list_symbols' in the
+    objective's own tool guidance, so a substring search finds the "leak" in
+    the adapter's boilerplate and stops the benchmark at case 59. Before that,
+    a needle named 'base' was matched inside a description about a base
+    directory. Any short name is a substring of something.
+    """
+    case = repoqa.Case(language="typescript", repo="o/r",
+                       description="devuelve verdadero cuando el valor es de ese tipo",
+                       needle_name="is")
+    ticket = repoqa.build_ticket(case, Path("."))
+    repoqa.assert_no_leak({"name": "is", "path": "src/guards.ts",
+                           "description": case.description}, ticket)
+
+
+def test_a_real_leak_is_still_caught():
+    """The boundary rule must not turn the guard off."""
+    case = repoqa.Case(language="python", repo="o/r", description="hace algo",
+                       needle_name="parse_header")
+    ticket = repoqa.build_ticket(case, Path("."))
+    leaked = work.Ticket(
+        ticket_id=ticket.ticket_id, repo=ticket.repo,
+        objective=ticket.objective + "\n(la funcion se llama parse_header)",
+        write_scope=(), allowed_new_files=(repoqa.ANSWER_FILE,),
+        acceptance_tests=(), full_suite=False, max_turns=10,
+    )
+    with pytest.raises(ValueError, match="LEAK"):
+        repoqa.assert_no_leak({"name": "parse_header", "description": "hace algo"}, leaked)
+
+
+def test_a_leaked_path_is_still_caught():
+    case = repoqa.Case(language="python", repo="o/r", description="hace algo",
+                       needle_name="f")
+    ticket = repoqa.build_ticket(case, Path("."))
+    leaked = work.Ticket(
+        ticket_id=ticket.ticket_id, repo=ticket.repo,
+        objective=ticket.objective + "\nMira en pkg/mod.py",
+        write_scope=(), allowed_new_files=(repoqa.ANSWER_FILE,),
+        acceptance_tests=(), full_suite=False, max_turns=10,
+    )
+    with pytest.raises(ValueError, match="LEAK"):
+        repoqa.assert_no_leak({"name": "f", "path": "pkg/mod.py",
+                               "description": "hace algo"}, leaked)

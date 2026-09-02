@@ -34,6 +34,7 @@ out, on every case.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -132,12 +133,18 @@ def assert_no_leak(needle: dict, ticket: work.Ticket) -> None:
     on purpose so the function cannot be identified from it, and whatever words
     it happens to contain are the benchmark's decision, not our contamination.
 
-    Checking the description too produced a false positive that killed a run 19
-    cases in -- the needle was named ``base``, and a description about a base
-    directory naturally contains the word. A guard that fires on ordinary
-    English is a guard that gets switched off, which is worse than no guard.
-    What this must catch is the adapter putting the name or path into the
-    template, and that is exactly what remains once the description is removed.
+    Two false positives have killed runs here, and both were the same mistake.
+    The first was a needle named ``base``, matched inside a description about a
+    base directory; the fix was to stop checking the description. The second was
+    a needle named ``is``, matched inside the words ``list_dir`` and
+    ``list_symbols`` in the objective's OWN tool guidance -- so removing the
+    description could not have helped. The guard was doing a substring search
+    for a symbol name, and any short name is a substring of something.
+
+    So it matches on word boundaries. That is what "the adapter put the name in
+    the template" actually means, and it is the only reading that does not fire
+    on ordinary text. A guard that fires on ordinary text is a guard that gets
+    switched off, which is worse than no guard at all.
     """
     description = needle.get("description") or "￿-no-description-￿"
     surround = ticket.objective.replace(description, "")
@@ -146,7 +153,13 @@ def assert_no_leak(needle: dict, ticket: work.Ticket) -> None:
         if value is None:
             continue
         text = str(value)
-        if field in ("name", "path") and text and text in surround:
+        if field not in ("name", "path") or not text:
+            continue
+        # \b on both sides: "is" must not match inside "list_dir", and a path
+        # must be the path rather than a fragment of a longer one. Boundaries
+        # land correctly for paths too, because "/" and "." are not word
+        # characters.
+        if re.search(r"\b" + re.escape(text) + r"\b", surround):
             raise ValueError(
                 f"LEAK: needle {field}={text!r} was added to the ticket by the adapter"
             )
