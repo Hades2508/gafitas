@@ -126,6 +126,18 @@ class ToolContext:
     #: Every command ``run`` executed, in order. Cheap to keep, and it is
     #: what makes a debugging session reproducible after the fact.
     commands_run: list[dict] = field(default_factory=list)
+    #: Per-test outcomes of the WHOLE suite before the agent touched
+    #: anything. Empty when the ticket disabled the full-suite check.
+    #: This is what makes it possible to tell the agent, during the run,
+    #: what the conscience will tell it afterwards (F-38).
+    baseline_outcomes: dict = field(default_factory=dict)
+    #: Callable returning per-test outcomes of the whole suite now.
+    #: Injected so tools.py does not import verify.py, which imports work.
+    full_suite_runner: Any = None
+    #: Tests that passed before and fail now, as of the last check. The
+    #: agent is told, and finish(DONE) refuses while this is non-empty.
+    known_regressions: list = field(default_factory=list)
+    collateral_checked: bool = False
     _scope: WriteScope | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -418,6 +430,33 @@ def list_symbols(ctx: ToolContext, path: Any) -> list[str]:
     return [f"{n} (línea {lineno[n]})" if n in lineno else n for n in names]
 
 
+def _syntax_report(source: str, exc: SyntaxError, rel: str) -> str:
+    """Show the model the line it got wrong, in the text it just sent (F-39).
+
+    ga06 failed with twenty-five consecutive ERROR_SYNTAX_AFTER_EDIT. Each
+    rejection said "line 23: unexpected indent" and nothing else -- and line 23
+    of WHAT? The content is the model's own past output, already elided from the
+    transcript, so it has no way to look. It rewrote the whole module from
+    scratch each time and made a different mistake.
+
+    Every byte needed to answer that was in this process. Quoting it back turns
+    an unactionable refusal into a one-line fix.
+    """
+    lines = source.splitlines()
+    lineno = exc.lineno or 0
+    if not (1 <= lineno <= len(lines)):
+        return f"  linea {lineno}: {exc.msg}"
+    lo = max(1, lineno - 3)
+    hi = min(len(lines), lineno + 2)
+    out = [f"  linea {lineno}: {exc.msg}", "  Esto es lo que enviaste:"]
+    for n in range(lo, hi + 1):
+        marker = ">>" if n == lineno else "  "
+        out.append(f"  {marker}{n:4}| {lines[n - 1]}")
+        if n == lineno and exc.offset and 0 < exc.offset <= len(lines[n - 1]) + 1:
+            out.append("       | " + " " * (exc.offset - 1) + "^")
+    return "\n".join(out)
+
+
 def _nearest_region(text: str, old: str, width: int = 12) -> str:
     """The part of *text* that most resembles *old*, for a failed edit (F-27).
 
@@ -487,8 +526,9 @@ def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
         except SyntaxError as exc:
             raise ToolError(
                 ERROR_SYNTAX_AFTER_EDIT,
-                f"la edición dejaría {rel!r} sin poder parsearse:\n  línea {exc.lineno}: {exc.msg}\n"
-                f"  NO se ha escrito nada. El fichero sigue como estaba.",
+                f"la edicion dejaria {rel!r} sin poder parsearse:\n"
+                + _syntax_report(candidate, exc, rel)
+                + "\n  NO se ha escrito nada. El fichero sigue como estaba.",
             ) from None
         except ValueError as exc:
             raise ToolError(ERROR_SYNTAX_AFTER_EDIT, f"{rel!r}: {exc}. NO se ha escrito nada.") from None
@@ -554,9 +594,9 @@ def replace_lines(ctx: ToolContext, path: Any, start: Any, end: Any, content: An
             raise ToolError(
                 ERROR_SYNTAX_AFTER_EDIT,
                 f"el reemplazo dejaria {rel!r} sin poder parsearse:\n"
-                f"  linea {exc.lineno}: {exc.msg}\n"
-                f"  NO se ha escrito nada. Comprueba la indentacion de content y que "
-                f"el rango {start}-{stop} empieza y acaba donde crees.",
+                + _syntax_report(candidate, exc, rel)
+                + f"\n  NO se ha escrito nada. Comprueba la indentacion de content y "
+                f"que el rango {start}-{stop} empieza y acaba donde crees.",
             ) from None
         except ValueError as exc:
             raise ToolError(ERROR_SYNTAX_AFTER_EDIT, f"{rel!r}: {exc}. NO se ha escrito nada.") from None
@@ -581,7 +621,9 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
         except SyntaxError as exc:
             raise ToolError(
                 ERROR_SYNTAX_AFTER_EDIT,
-                f"{rel!r} no parsea: línea {exc.lineno}: {exc.msg}. NO se ha escrito nada.",
+                f"{rel!r} no parsea:\n"
+                + _syntax_report(content, exc, rel)
+                + "\n  NO se ha escrito nada.",
             ) from None
         except ValueError as exc:
             raise ToolError(ERROR_SYNTAX_AFTER_EDIT, f"{rel!r}: {exc}. NO se ha escrito nada.") from None
@@ -826,14 +868,55 @@ def run_tests(ctx: ToolContext, node_ids: Any = None) -> dict:
     # Green means the DECLARED suite passed. A model that names those tests
     # explicitly has done the same work as one that passed null, so compare
     # the target sets rather than the argument shape.
-    if passed and set(ctx.acceptance_tests) <= {_normalise(t) for t in targets}:
+    covers_acceptance = set(ctx.acceptance_tests) <= {_normalise(t) for t in targets}
+    if passed and covers_acceptance:
         ctx.tests_green = True
-    return {
+    result = {
         "passed": passed,
         "exit_code": proc.returncode,
         "timed_out": False,
         "output": (proc.stdout + proc.stderr)[-TEST_OUTPUT_TAIL:],
     }
+
+    # F-38. The acceptance suite is a sample. The conscience judges the whole
+    # repository, and until now the agent could not see the difference: it ran
+    # the declared tests, saw green, and stopped -- while a test it was supposed
+    # to have updated sat red somewhere it was never shown. tests01 failed
+    # exactly that way in both sweeps and was escalated to a paid tier for it.
+    #
+    # So the moment the acceptance goes green, the collateral check runs here
+    # and the answer is appended to this same result. No new argument: a small
+    # model does not need another decision, it needs the fact.
+    if passed and covers_acceptance and ctx.baseline_outcomes and ctx.full_suite_runner:
+        try:
+            now = ctx.full_suite_runner(ctx.root)
+        except Exception as exc:  # noqa: BLE001 - never let the check break the run
+            result["collateral"] = {"checked": False, "error": f"{type(exc).__name__}: {exc}"}
+            return result
+        broke = sorted(
+            node for node, was in ctx.baseline_outcomes.items()
+            if was == "passed" and now.get(node) in ("failed", "error")
+        )
+        ctx.known_regressions = broke
+        ctx.collateral_checked = True
+        if broke:
+            shown = ", ".join(broke[:8]) + (" ..." if len(broke) > 8 else "")
+            result["collateral"] = {
+                "checked": True, "broken": broke,
+                "note": (
+                    f"[ATENCION: los tests de aceptacion pasan, pero has ROTO "
+                    f"{len(broke)} test(s) que antes pasaban: {shown}. "
+                    f"Eso cuenta como fallo. Arreglalo antes de terminar: "
+                    f"leelos con read_file y ejecutalos con "
+                    f"run_tests(node_ids=[...]) para ver el error.]"
+                ),
+            }
+        else:
+            result["collateral"] = {
+                "checked": True, "broken": [],
+                "note": "[aceptacion en verde y no has roto ningun otro test.]",
+            }
+    return result
 
 
 def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
@@ -889,6 +972,19 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
     # I9 still holds and the real verdict is taken after the loop, against a
     # suite the agent cannot influence. It is the harness declining to accept a
     # claim of completion from an agent that never looked.
+    # F-38: refuse DONE while a collateral regression is known to stand. The
+    # conscience fails exactly this, so stopping the agent one line behind it --
+    # letting it claim success and only then failing it -- wastes the run and
+    # escalates a problem it was perfectly capable of fixing.
+    if normalised == "DONE" and ctx.known_regressions:
+        shown = ", ".join(ctx.known_regressions[:8])
+        raise ToolError(
+            ERROR_NOT_VERIFIED,
+            f"no puedes terminar con status='DONE': has roto {len(ctx.known_regressions)} "
+            f"test(s) que antes pasaban.\n  {shown}\n"
+            f"  Arreglalos y vuelve a ejecutar run_tests. Si crees que ese fallo es "
+            f"correcto y esperado, explicalo con finish(status='BLOCKED').",
+        )
     if normalised == "DONE" and ctx.acceptance_tests and not ctx.tests_green:
         raise ToolError(
             ERROR_NOT_VERIFIED,
@@ -1107,7 +1203,8 @@ TOOL_DOC: dict[str, str] = {
         "Ejecuta los tests de aceptacion de la mision y devuelve si pasaron junto "
         "con la salida de pytest. Sin argumentos ejecuta los tests declarados; "
         "pasa node_ids para ejecutar solo algunos. Leer la salida cuando falla es "
-        "como averiguas que arreglar."
+        "como averiguas que arreglar. Cuando la aceptacion pasa, ademas te digo "
+        "si has roto algun otro test del repositorio que antes pasaba."
     ),
     "finish": (
         "Termina tu trabajo. status='DONE' SOLO despues de ejecutar run_tests y "

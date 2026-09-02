@@ -370,6 +370,13 @@ def run_ticket(
             write_scope=ticket.write_scope,
             allowed_new_files=ticket.allowed_new_files,
             acceptance_tests=ticket.acceptance_tests,
+            # F-38: hand the agent the same baseline the conscience will use,
+            # so "you broke something" can be said during the run rather than
+            # discovered afterwards and charged to it.
+            baseline_outcomes=dict(pre_full.outcomes) if ticket.full_suite else {},
+            full_suite_runner=(
+                (lambda root: verify.run_suite(root).outcomes) if ticket.full_suite else None
+            ),
         )
         telemetry.start(ticket.ticket_id, repo=str(ticket.repo), objective=ticket.objective)
         provider = factory(model)

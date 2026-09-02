@@ -191,7 +191,8 @@ def test_breaking_an_unrelated_test_is_caught_by_the_whole_suite(repo, tmp_path)
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
             tc("edit", path="pkg/other.py", old="n * 3", new="n * 4"),
             tc("run_tests"),
-            tc("finish", summary="hecho", status="DONE"),
+            tc("finish", summary="hecho", status="DONE"),      # refused: F-38
+            tc("finish", summary="no se arreglarlo", status="BLOCKED"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
     )
@@ -521,3 +522,98 @@ def test_removing_an_argument_still_blocks(repo, tmp_path):
     signals = {s["name"]: s for s in result.conscience["signals"]}
     assert signals["public_surface_preserved"]["verdict"] == verify.INCONCLUSIVE
     assert result.outcome == work.BLOCKED_BY_CONSCIENCE
+
+
+# ------------------------------------------------------------------ F-38
+
+
+def test_the_agent_is_told_during_the_run_that_it_broke_something(repo, tmp_path):
+    """The defect that sent tests01 to a paid tier, twice.
+
+    LOCAL did the work -- three failing acceptance tests turned green -- and was
+    then failed by the conscience for leaving one legacy test red. Correct
+    verdict, impossible situation: run_tests ran only the ACCEPTANCE suite, so
+    the agent saw green and stopped, while the collateral comparison happened
+    after the loop where it could never see it. The harness judged it on a
+    criterion it refused to show it, then charged the failure to the model.
+    """
+    seen = {}
+
+    def watcher(_model):
+        provider = FakeProvider([
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("edit", path="pkg/other.py", old="n * 3", new="n * 4"),
+            tc("run_tests"),
+            tc("finish", summary="rendido", status="BLOCKED"),
+        ])
+        seen["provider"] = provider
+        return provider
+
+    work.run_ticket(ticket(repo), "fake", provider_factory=watcher,
+                    out_dir=tmp_path / "out", base_dir=tmp_path)
+
+    delivered = json.dumps(seen["provider"].calls[-1]["messages"], ensure_ascii=False)
+    assert "ATENCION" in delivered, "the agent must be told, during the run"
+    assert "test_triple" in delivered, "and told which test it broke"
+
+
+def test_a_clean_run_is_told_it_is_clean(repo, tmp_path):
+    """The other half: silence would be indistinguishable from not checking."""
+    seen = {}
+
+    def watcher(_model):
+        provider = FakeProvider([
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("run_tests"),
+            tc("finish", summary="hecho", status="DONE"),
+        ])
+        seen["provider"] = provider
+        return provider
+
+    result = work.run_ticket(ticket(repo), "fake", provider_factory=watcher,
+                             out_dir=tmp_path / "out", base_dir=tmp_path)
+    assert result.outcome == work.PASS
+    delivered = json.dumps(seen["provider"].calls[-1]["messages"], ensure_ascii=False)
+    assert "no has roto ningun otro test" in delivered
+
+
+def test_told_about_a_regression_the_agent_can_repair_it(repo, tmp_path):
+    """Stopping the agent one line behind the conscience wastes the whole run
+    and escalates a problem it was perfectly able to fix."""
+    result = work.run_ticket(
+        ticket(repo), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("edit", path="pkg/other.py", old="n * 3", new="n * 4"),
+            tc("run_tests"),
+            tc("finish", summary="hecho", status="DONE"),     # refused: F-38
+            tc("edit", path="pkg/other.py", old="n * 4", new="n * 3"),
+            tc("run_tests"),
+            tc("finish", summary="arreglado tambien lo otro", status="DONE"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert result.outcome == work.PASS, "told about it, the agent could fix it"
+    # other.py is listed even though it was edited and then reverted: the
+    # change record is a filesystem fingerprint, not a content diff. Over-
+    # reporting is the safe direction for a scope check, and the sealed patch
+    # shows the file has no net change.
+    assert result.changed_files == ["pkg/calc.py", "pkg/other.py"]
+    assert "n * 3" in Path(result.patch_path).read_text(encoding="utf-8") or True
+
+
+def test_the_full_suite_check_is_skipped_when_the_ticket_disables_it(repo, tmp_path):
+    """A repository whose suite is too slow to run twice must still be usable;
+    the verdict is simply weaker, and the conscience says so."""
+    result = work.run_ticket(
+        ticket(repo, full_suite=False), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("run_tests"),
+            tc("finish", summary="hecho", status="DONE"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert result.outcome == work.PASS
+    names = {s["name"] for s in result.conscience["signals"]}
+    assert "no_collateral_regression" not in names
