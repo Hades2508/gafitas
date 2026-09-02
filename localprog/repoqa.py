@@ -125,17 +125,31 @@ def build_ticket(case: Case, repo_path: Path, *, max_turns: int = 40) -> work.Ti
 
 
 def assert_no_leak(needle: dict, ticket: work.Ticket) -> None:
-    """Prove the answer did not reach the ticket. Runs on every case."""
-    haystack = ticket.objective
+    """Prove WE did not add the answer to the ticket. Runs on every case.
+
+    Checked against the objective MINUS the description, and that exclusion is
+    the whole point. The description is sanctioned content: RepoQA obfuscates it
+    on purpose so the function cannot be identified from it, and whatever words
+    it happens to contain are the benchmark's decision, not our contamination.
+
+    Checking the description too produced a false positive that killed a run 19
+    cases in -- the needle was named ``base``, and a description about a base
+    directory naturally contains the word. A guard that fires on ordinary
+    English is a guard that gets switched off, which is worse than no guard.
+    What this must catch is the adapter putting the name or path into the
+    template, and that is exactly what remains once the description is removed.
+    """
+    description = needle.get("description") or "￿-no-description-￿"
+    surround = ticket.objective.replace(description, "")
     for field in FORBIDDEN_NEEDLE_FIELDS:
         value = needle.get(field)
         if value is None:
             continue
         text = str(value)
-        # A short numeric offset can appear innocently in prose; a name or a
-        # path cannot, and those are the ones that give the answer away.
-        if field in ("name", "path") and text and text in haystack:
-            raise ValueError(f"LEAK: needle {field}={text!r} reached the ticket")
+        if field in ("name", "path") and text and text in surround:
+            raise ValueError(
+                f"LEAK: needle {field}={text!r} was added to the ticket by the adapter"
+            )
 
 
 def materialise_repo(repo_record: dict, target: Path) -> Path:
@@ -214,6 +228,16 @@ def to_official_output(case: Case, answer: str, *, model: str) -> dict:
         "language": case.language,
         "output": [answer],
         "model": model,
+        # compute_score copies these three into its per-case record for its
+        # needle-position analysis. They describe WHERE the needle sat inside
+        # the truncated 16k context of the native protocol -- and in the agent
+        # setting nothing is truncated, because the whole repository is on
+        # disk. So they are explicitly null rather than invented: the verdict
+        # itself is computed only from the answer, the ground-truth name and
+        # the repo, so scoring is unaffected either way.
+        "position_ratio": None,
+        "needle_token_start": None,
+        "needle_token_end": None,
     }
 
 

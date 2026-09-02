@@ -202,3 +202,47 @@ def test_only_the_answer_file_is_recovered():
 def test_an_empty_patch_yields_an_empty_answer():
     assert repoqa.answer_from_patch("") == ""
     assert repoqa.answer_from_patch("(sin cambios)") == ""
+
+
+def test_a_needle_named_after_a_common_word_is_not_a_false_leak():
+    """A run died 19 cases in on a needle named `base`, because a description
+    about a base directory naturally contains the word. A guard that fires on
+    ordinary English gets switched off, which is worse than no guard.
+
+    The description is sanctioned content -- RepoQA obfuscates it on purpose --
+    so only what the ADAPTER adds is checked."""
+    needle = {"name": "base", "path": "src/pkg/base.py",
+              "description": "Resolves the base directory used as the base for all lookups."}
+    case = repoqa.Case(language="python", repo="x/y",
+                       description=needle["description"], needle_name="base")
+    ticket = repoqa.build_ticket(case, Path("."))
+    repoqa.assert_no_leak(needle, ticket)  # must not raise
+
+
+def test_a_real_leak_is_still_caught_when_the_name_is_common():
+    """Narrowing to the adapter's own text must not blind the guard."""
+    needle = {"name": "base", "path": "src/pkg/base.py", "description": "Some description."}
+    case = repoqa.Case(language="python", repo="x/y",
+                       description=needle["description"], needle_name="base")
+    good = repoqa.build_ticket(case, Path("."))
+    leaked = type(good)(
+        ticket_id=good.ticket_id, repo=good.repo,
+        objective=good.objective + "\nThe function is called base.",
+        write_scope=(), allowed_new_files=(repoqa.ANSWER_FILE,), acceptance_tests=(),
+    )
+    with pytest.raises(ValueError, match="LEAK"):
+        repoqa.assert_no_leak(needle, leaked)
+
+
+def test_a_path_added_by_the_adapter_is_still_caught():
+    needle = {"name": "zzz_unique", "path": "src/pkg/base.py", "description": "Desc."}
+    case = repoqa.Case(language="python", repo="x/y",
+                       description="Desc.", needle_name="zzz_unique")
+    good = repoqa.build_ticket(case, Path("."))
+    leaked = type(good)(
+        ticket_id=good.ticket_id, repo=good.repo,
+        objective=good.objective + "\nLook in src/pkg/base.py",
+        write_scope=(), allowed_new_files=(repoqa.ANSWER_FILE,), acceptance_tests=(),
+    )
+    with pytest.raises(ValueError, match="LEAK"):
+        repoqa.assert_no_leak(needle, leaked)
