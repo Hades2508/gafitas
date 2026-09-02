@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .tools import SKIP_DIRS
+
 PASS = "PASS"
 REGRESSION = "REGRESSION"
 INCONCLUSIVE = "INCONCLUSIVE"
@@ -65,7 +67,8 @@ UNKNOWN = "UNKNOWN"                          # could not be established
 
 PYTEST_TIMEOUT = 300.0
 OUTPUT_TAIL = 4000
-SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules"}
+    # SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules"}
+
 
 
 def combine(verdicts) -> str:
