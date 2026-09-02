@@ -275,3 +275,88 @@ def test_a_missing_model_is_named_before_the_batch_runs():
     with mock_patch("urllib.request.urlopen", return_value=Response(body)):
         complaint = OllamaProvider("nope:1b").preflight()
     assert complaint and "no esta instalado" in complaint
+
+
+# ------------------------------------------------------------------ F-48
+
+
+def test_a_free_tier_is_retried_before_anyone_is_paid(tmp_path):
+    """Measured per ticket, most local failures are sampling rather than a
+    ceiling: seven of eight tickets passed at least once in three, and only one
+    never did. A second free attempt beats a paid one nearly every time."""
+    runner, seen = ladder(work.FAIL, work.FAIL, work.PASS)
+    tiers = [
+        {"tier": route.LOCAL, "model": "local-4b", "protocol": "A", "attempts": 3},
+        {"tier": route.LUNA, "model": "luna", "protocol": "J"},
+    ]
+    routed = route.run_with_ladder(ticket(tmp_path), tiers=tiers, runner=runner)
+    assert routed.outcome == work.PASS
+    assert [m for m, _ in seen] == ["local-4b"] * 3, "Luna was never called"
+    assert routed.paid is False
+    assert routed.local_attempts == 3
+
+
+def test_retrying_the_same_free_tier_is_not_escalation(tmp_path):
+    """Persistence is not escalation. Conflating them would make the cost
+    report claim a ticket had been escalated when nobody was paid."""
+    runner, _ = ladder(work.FAIL, work.PASS)
+    tiers = [{"tier": route.LOCAL, "model": "local-4b", "protocol": "A", "attempts": 2}]
+    routed = route.run_with_ladder(ticket(tmp_path), tiers=tiers, runner=runner)
+    assert len(routed.attempts) == 2
+    assert routed.escalated is False
+    assert routed.paid is False
+
+
+def test_the_free_tiers_are_exhausted_before_a_paid_one(tmp_path):
+    runner, seen = ladder(work.FAIL, work.FAIL, work.FAIL, work.FAIL, work.PASS)
+    tiers = [
+        {"tier": route.LOCAL, "model": "fast", "protocol": "A", "attempts": 3},
+        {"tier": route.LOCAL_STRONG, "model": "strong", "protocol": "A", "attempts": 1},
+        {"tier": route.LUNA, "model": "luna", "protocol": "J"},
+    ]
+    routed = route.run_with_ladder(ticket(tmp_path), tiers=tiers, runner=runner)
+    assert [m for m, _ in seen] == ["fast", "fast", "fast", "strong", "luna"]
+    assert routed.paid is True
+    assert routed.local_attempts == 4
+
+
+def test_a_terminal_outcome_stops_the_retries_too(tmp_path):
+    """A ticket that was not a task, or a crashed server, does not become one
+    by being asked three times."""
+    runner, seen = ladder(work.NON_DISCRIMINATING, work.PASS, work.PASS)
+    tiers = [{"tier": route.LOCAL, "model": "local", "protocol": "A", "attempts": 3}]
+    routed = route.run_with_ladder(ticket(tmp_path), tiers=tiers, runner=runner)
+    assert routed.outcome == work.NON_DISCRIMINATING
+    assert len(seen) == 1
+
+
+def test_a_first_attempt_pass_costs_exactly_one_attempt(tmp_path):
+    runner, seen = ladder(work.PASS, work.PASS, work.PASS)
+    tiers = [{"tier": route.LOCAL, "model": "local", "protocol": "A", "attempts": 3}]
+    routed = route.run_with_ladder(ticket(tmp_path), tiers=tiers, runner=runner)
+    assert len(seen) == 1 and routed.local_attempts == 1
+
+
+def test_the_summary_reports_what_was_paid_for(tmp_path):
+    """The number the whole project is judged on. Anything above zero means the
+    normal path still depends on somebody's API."""
+    runner, _ = ladder(work.FAIL, work.PASS)
+    free = route.run_with_ladder(
+        ticket(tmp_path),
+        tiers=[{"tier": route.LOCAL, "model": "l", "protocol": "A", "attempts": 2}],
+        runner=runner,
+    )
+    runner, _ = ladder(work.FAIL, work.PASS)
+    costly = route.run_with_ladder(ticket(tmp_path), tiers=TIERS, runner=runner)
+
+    summary = route.summarise([free, costly])
+    assert summary["solved"] == 2
+    assert summary["solved_free"] == 1
+    assert summary["paid_tickets"] == 1
+    assert summary["paid_share"] == 0.5
+
+
+def test_luna_is_absent_from_the_free_tier_set():
+    assert route.LOCAL in route.FREE_TIERS
+    assert route.LOCAL_STRONG in route.FREE_TIERS
+    assert route.LUNA not in route.FREE_TIERS

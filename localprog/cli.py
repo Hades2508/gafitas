@@ -144,7 +144,8 @@ def cmd_work(args) -> int:
     # and the loop, the tools, the containment and the conscience are identical
     # for both. That is the whole point of the tier being a provider rather than
     # a second runner (F-13).
-    def local_tier() -> dict:
+    def local_tier(tier: str = route.LOCAL, model: str | None = None,
+                   attempts: int = 1) -> dict:
         # Protocol is a property of the MODEL, not of the tier. qwen2.5-coder:7b
         # emits no native tool call at all -- 3 of 3, stalled immediately -- and
         # that looked like an unusable model. Protocol J is model-agnostic and
@@ -152,7 +153,8 @@ def cmd_work(args) -> int:
         # native tool channel can still drive the identical loop through JSON.
         # Making this reachable costs one flag and no new infrastructure.
         return {
-            "tier": route.LOCAL, "model": args.model, "protocol": args.local_protocol,
+            "tier": tier, "model": model or args.model,
+            "attempts": attempts, "protocol": args.local_protocol,
             "provider_factory": lambda name: OllamaProvider(
                 name, num_ctx=args.num_ctx, num_predict=args.num_predict,
                 timeout=args.timeout,
@@ -170,9 +172,17 @@ def cmd_work(args) -> int:
     if args.tier == "LUNA":
         tiers = [luna_tier(args.model)]
     elif args.tier == "AUTO":
-        tiers = [local_tier(), luna_tier(args.luna_model)]
+        # The normal path is free. LOCAL_FAST retries before LOCAL_STRONG is
+        # loaded, and Luna appears only when explicitly asked for -- it is a
+        # teacher and a control during development, not a runtime dependency.
+        tiers = [local_tier(route.LOCAL, args.model, args.local_attempts)]
+        if args.strong_model:
+            tiers.append(local_tier(route.LOCAL_STRONG, args.strong_model,
+                                    args.strong_attempts))
+        if args.allow_luna:
+            tiers.append(luna_tier(args.luna_model))
     else:
-        tiers = [local_tier()]
+        tiers = [local_tier(route.LOCAL, args.model, args.local_attempts)]
     # F-41: fail fast and legibly when the provider is not there, instead of
     # producing a batch of PROVIDER_ERRORs that reads like a batch of failures.
     probe = tiers[0]["provider_factory"](tiers[0]["model"])
@@ -282,8 +292,10 @@ def _write_work_report(out: Path, records, routed_all=()) -> None:
         summary = route.summarise(list(routed_all))
         lines += ["", "## Escalado", "",
                   f"- resueltos: **{summary['solved']}/{summary['tickets']}**",
-                  f"- resueltos sin escalar: **{summary['solved_without_escalation']}**",
-                  f"- escalados: **{summary['escalated']}**", ""]
+                  f"- resueltos SIN PAGAR NADA: **{summary['solved_free']}**",
+                  f"- tickets que tocaron un tier de pago: "
+                  f"**{summary['paid_tickets']}** ({summary['paid_share']:.0%})",
+                  f"- cambiaron de tier: **{summary['escalated']}**", ""]
         for tier, bucket in summary["by_tier"].items():
             cost = (
                 f"{bucket['input_tokens']} tok_in, {bucket['output_tokens']} tok_out"
@@ -335,8 +347,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="LOCAL: Ollama + native tool calls. LUNA: Codex CLI + "
                         "protocol J. AUTO: try LOCAL, escalate to LUNA only when "
                         "LOCAL demonstrably failed.")
+    p.add_argument("--local-attempts", type=int, default=1,
+                   help="Times to retry the local model before moving up. "
+                        "Local inference is free; most local misses are "
+                        "sampling rather than a ceiling.")
+    p.add_argument("--strong-model", default=None,
+                   help="A larger LOCAL model to try when the fast one "
+                        "runs out of attempts. Still free.")
+    p.add_argument("--strong-attempts", type=int, default=1)
+    p.add_argument("--allow-luna", action="store_true",
+                   help="Permit the paid LUNA rung in --tier AUTO. Off by "
+                        "default: the normal path must not depend on it.")
     p.add_argument("--luna-model", default="gpt-5.6-luna",
-                   help="Model for the LUNA rung of --tier AUTO.")
+                   help="Model for the LUNA rung, when --allow-luna is given.")
     p.add_argument("--effort", default="low", help="LUNA only: Codex reasoning effort.")
     p.add_argument("--local-protocol", choices=("A", "J"), default="A",
                    help="How to drive the LOCAL model. A: native tool calls. "

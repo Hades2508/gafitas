@@ -50,7 +50,12 @@ from typing import Any, Callable
 from . import work
 
 LOCAL = "LOCAL"
+LOCAL_STRONG = "LOCAL_STRONG"
 LUNA = "LUNA"
+
+#: Tiers that cost nothing but electricity. The point of the whole exercise is
+#: that the normal path contains only these.
+FREE_TIERS = frozenset({LOCAL, LOCAL_STRONG})
 
 #: The agent tried and did not manage it. A stronger model may.
 ESCALATABLE = frozenset({work.FAIL, work.BLOCKED_BY_CONSCIENCE})
@@ -95,7 +100,21 @@ class Routed:
 
     @property
     def escalated(self) -> bool:
-        return len(self.attempts) > 1
+        """Whether the work left the tier it started on.
+
+        Not simply 'more than one attempt': retrying the same free tier is not
+        escalation, it is persistence, and conflating the two would make the
+        cost report say a ticket had been escalated when nobody was paid.
+        """
+        return len({a.tier for a in self.attempts}) > 1
+
+    @property
+    def local_attempts(self) -> int:
+        return sum(1 for a in self.attempts if a.tier in FREE_TIERS)
+
+    @property
+    def paid(self) -> bool:
+        return any(a.tier not in FREE_TIERS for a in self.attempts)
 
     def to_dict(self) -> dict:
         return {
@@ -103,6 +122,8 @@ class Routed:
             "outcome": self.outcome,
             "final_tier": self.final_tier,
             "escalated": self.escalated,
+            "local_attempts": self.local_attempts,
+            "paid": self.paid,
             "attempts": [a.to_dict() for a in self.attempts],
             "record": self.result.to_dict() if self.result else None,
         }
@@ -147,18 +168,25 @@ def run_with_ladder(
     routed = Routed(ticket_id=ticket.ticket_id)
 
     for step in tiers:
-        result = runner(
-            ticket, step["model"],
-            provider_factory=step.get("provider_factory"),
-            protocol=step.get("protocol", "A"),
-            **kwargs,
-        )
-        routed.attempts.append(Attempt(
-            tier=step["tier"], model=step["model"], outcome=result.outcome,
-            wall_seconds=result.wall_seconds, usage=dict(result.usage),
-        ))
-        routed.result = result
-        if not should_escalate(result.outcome):
+        # F-48: a tier may be tried more than once before moving up. Measured
+        # per ticket, most local failures are sampling rather than a ceiling --
+        # seven of eight tickets passed at least once in three, and only one
+        # never did. A second free attempt beats a paid one nearly every time.
+        for _ in range(max(1, int(step.get("attempts", 1)))):
+            result = runner(
+                ticket, step["model"],
+                provider_factory=step.get("provider_factory"),
+                protocol=step.get("protocol", "A"),
+                **kwargs,
+            )
+            routed.attempts.append(Attempt(
+                tier=step["tier"], model=step["model"], outcome=result.outcome,
+                wall_seconds=result.wall_seconds, usage=dict(result.usage),
+            ))
+            routed.result = result
+            if not should_escalate(result.outcome):
+                break
+        if not should_escalate(routed.result.outcome):
             break
     return routed
 
@@ -197,12 +225,16 @@ def summarise(routed_list: list[Routed]) -> dict:
                 bucket["solved"] += 1
 
     solved = [r for r in routed_list if r.outcome in SUCCESSFUL]
+    paid = [r for r in routed_list if r.paid]
     return {
         "tickets": len(routed_list),
         "solved": len(solved),
         "escalated": sum(1 for r in routed_list if r.escalated),
-        "solved_without_escalation": sum(
-            1 for r in solved if not r.escalated
-        ),
+        "solved_without_escalation": sum(1 for r in solved if not r.escalated),
+        # The number the whole project is judged on. Anything above zero means
+        # the normal path still depends on somebody's API.
+        "paid_tickets": len(paid),
+        "paid_share": round(len(paid) / len(routed_list), 3) if routed_list else 0.0,
+        "solved_free": sum(1 for r in solved if not r.paid),
         "by_tier": by_tier,
     }
