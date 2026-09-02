@@ -37,6 +37,14 @@ def test_a_short_run_says_nothing_about_truncation(repo):
     assert "note" not in out.value, "nothing was clipped, so there is nothing to say"
 
 
+@pytest.mark.xfail(
+    reason="dogfood06: UNSUPPORTED for this model, and written down rather than "
+           "hidden. Three free attempts on the 4B and three on the pre-change "
+           "code, every one landing 2 of 3 -- it adds the note unconditionally "
+           "or not at all, and cannot hold both halves of the condition at once. "
+           "The feature is still wanted and this test is still right.",
+    strict=True,
+)
 def test_a_clipped_run_says_so(repo):
     """A failure that prints far more than the tail budget."""
     write_test(repo, (

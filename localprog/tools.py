@@ -1236,6 +1236,10 @@ def list_dir(ctx: ToolContext, path: Any = ".", recursive: Any = False) -> dict:
         "path": rel,
         "dirs": dirs[:MAX_DIR_ENTRIES],
         "files": files[: max(0, MAX_DIR_ENTRIES - len(dirs))],
+        # Every file in this directory, not only the ones that fitted. A caller
+        # cannot add up the sizes it was not shown, and the truncated listing is
+        # exactly when it most wants the number (dogfood07).
+        "total_bytes": sum(entry["bytes"] for entry in files),
     }
     shown = len(out["dirs"]) + len(out["files"])
     notes = []
