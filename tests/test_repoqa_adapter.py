@@ -159,3 +159,46 @@ def test_outputs_are_written_as_jsonl(tmp_path):
     ])
     rows = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 2 and rows[1]["output"] == ["b"]
+
+
+# --------------------------------------------------- recovering the answer
+
+
+def test_the_answer_is_recovered_from_the_sealed_patch():
+    """run_ticket disposes the workspace once it has a CANDIDATE, so the answer
+    file is gone by the time the caller sees the result. It survives in the
+    patch, where a new file is entirely additions."""
+    patch = (
+        "diff --git a/REPOQA_ANSWER.txt b/REPOQA_ANSWER.txt\n"
+        "--- a/REPOQA_ANSWER.txt\n"
+        "+++ b/REPOQA_ANSWER.txt\n"
+        "@@ -0,0 +1,3 @@\n"
+        "+def alpha(x):\n"
+        "+    return x + 1\n"
+        "+\n"
+    )
+    assert repoqa.answer_from_patch(patch) == "def alpha(x):\n    return x + 1\n"
+
+
+def test_only_the_answer_file_is_recovered():
+    """A patch touching other files must not contaminate the answer."""
+    patch = (
+        "diff --git a/src/other.py b/src/other.py\n"
+        "--- a/src/other.py\n"
+        "+++ b/src/other.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        "+CONTAMINATION = 1\n"
+        "diff --git a/REPOQA_ANSWER.txt b/REPOQA_ANSWER.txt\n"
+        "--- a/REPOQA_ANSWER.txt\n"
+        "+++ b/REPOQA_ANSWER.txt\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+def alpha(): pass\n"
+    )
+    recovered = repoqa.answer_from_patch(patch)
+    assert "CONTAMINATION" not in recovered
+    assert recovered == "def alpha(): pass"
+
+
+def test_an_empty_patch_yields_an_empty_answer():
+    assert repoqa.answer_from_patch("") == ""
+    assert repoqa.answer_from_patch("(sin cambios)") == ""

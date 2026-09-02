@@ -171,6 +171,36 @@ def read_answer(workspace: Path) -> str:
         return ""
 
 
+def answer_from_patch(patch_text: str) -> str:
+    """Recover the answer file's contents out of the sealed patch.
+
+    ``run_ticket`` disposes the workspace once it has produced a CANDIDATE, so
+    by the time the caller gets the result the answer file is gone. The patch
+    survives, and the answer is a NEW file in it, which means every one of its
+    lines is an addition. Reading it back from there beats keeping the whole
+    workspace alive just to fish one file out of it.
+    """
+    if not patch_text:
+        return ""
+    lines = patch_text.splitlines()
+    collecting = False
+    body: list[str] = []
+    for line in lines:
+        if line.startswith("--- ") or line.startswith("+++ "):
+            # +++ b/<path> tells us which file the following hunk belongs to.
+            if line.startswith("+++ "):
+                collecting = line.endswith(ANSWER_FILE)
+            continue
+        if line.startswith("diff --git") or line.startswith("index "):
+            collecting = False
+            continue
+        if line.startswith("@@"):
+            continue
+        if collecting and line.startswith("+"):
+            body.append(line[1:])
+    return chr(10).join(body)
+
+
 def to_official_output(case: Case, answer: str, *, model: str) -> dict:
     """One row in the shape repoqa.compute_score consumes.
 
