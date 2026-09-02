@@ -239,3 +239,39 @@ def test_a_tier_that_does_report_tokens_is_marked_reported(tmp_path):
     bucket = route.summarise([routed])["by_tier"][route.LOCAL]
     assert bucket["tokens_reported"] is True
     assert bucket["input_tokens"] == 900
+
+
+def test_a_dead_provider_is_reported_before_the_batch_runs():
+    """F-41. An eight-ticket sweep once produced eight PROVIDER_ERRORs and
+    reported '0/8 PASS' because the Ollama server had stopped. The routing was
+    right -- a provider error is terminal, so nothing escalated to a paid tier --
+    but the operator got a report that reads like eight failures."""
+    import urllib.error
+    from unittest.mock import patch as mock_patch
+
+    from localprog.provider import OllamaProvider
+
+    provider = OllamaProvider("qwen3:4b", endpoint="http://127.0.0.1:11434/api/chat")
+    with mock_patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+        complaint = provider.preflight()
+    assert complaint and "ollama serve" in complaint
+
+
+def test_a_missing_model_is_named_before_the_batch_runs():
+    import io
+    import json as _json
+    from unittest.mock import patch as mock_patch
+
+    from localprog.provider import OllamaProvider
+
+    body = _json.dumps({"models": [{"name": "qwen3:4b"}, {"name": "other:7b"}]}).encode()
+
+    class Response(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    with mock_patch("urllib.request.urlopen", return_value=Response(body)):
+        assert OllamaProvider("qwen3:4b").preflight() is None
+    with mock_patch("urllib.request.urlopen", return_value=Response(body)):
+        complaint = OllamaProvider("nope:1b").preflight()
+    assert complaint and "no esta instalado" in complaint

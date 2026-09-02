@@ -145,8 +145,14 @@ def cmd_work(args) -> int:
     # for both. That is the whole point of the tier being a provider rather than
     # a second runner (F-13).
     def local_tier() -> dict:
+        # Protocol is a property of the MODEL, not of the tier. qwen2.5-coder:7b
+        # emits no native tool call at all -- 3 of 3, stalled immediately -- and
+        # that looked like an unusable model. Protocol J is model-agnostic and
+        # already exists for Luna, so a local model that cannot drive Ollama's
+        # native tool channel can still drive the identical loop through JSON.
+        # Making this reachable costs one flag and no new infrastructure.
         return {
-            "tier": route.LOCAL, "model": args.model, "protocol": "A",
+            "tier": route.LOCAL, "model": args.model, "protocol": args.local_protocol,
             "provider_factory": lambda name: OllamaProvider(
                 name, num_ctx=args.num_ctx, num_predict=args.num_predict,
                 timeout=args.timeout,
@@ -167,6 +173,15 @@ def cmd_work(args) -> int:
         tiers = [local_tier(), luna_tier(args.luna_model)]
     else:
         tiers = [local_tier()]
+    # F-41: fail fast and legibly when the provider is not there, instead of
+    # producing a batch of PROVIDER_ERRORs that reads like a batch of failures.
+    probe = tiers[0]["provider_factory"](tiers[0]["model"])
+    complaint = probe.preflight() if hasattr(probe, "preflight") else None
+    if complaint:
+        print(f"PREFLIGHT: {complaint}", file=sys.stderr)
+        telemetry.close()
+        return 3
+
     records = []
     routed_all = []
     try:
@@ -304,6 +319,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--luna-model", default="gpt-5.6-luna",
                    help="Model for the LUNA rung of --tier AUTO.")
     p.add_argument("--effort", default="low", help="LUNA only: Codex reasoning effort.")
+    p.add_argument("--local-protocol", choices=("A", "J"), default="A",
+                   help="How to drive the LOCAL model. A: native tool calls. "
+                        "J: one JSON object per turn, for models whose native "
+                        "tool channel does not work.")
     p.add_argument("--num-ctx", type=int, default=work.WORK_NUM_CTX)
     p.add_argument("--num-predict", type=int, default=work.WORK_NUM_PREDICT)
     p.add_argument("--max-turns", type=int, default=None)

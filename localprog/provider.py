@@ -85,6 +85,29 @@ class OllamaProvider:
             "timeout": self.timeout,
         }
 
+    def preflight(self) -> str | None:
+        """Return why this provider is unusable, or None if it looks fine.
+
+        F-41. An eight-ticket sweep once produced eight PROVIDER_ERRORs and
+        reported "0/8 PASS" because the Ollama server had stopped. The routing
+        behaved correctly -- a provider error is terminal, so nothing escalated
+        to a paid tier -- but the operator got a report that reads like eight
+        failures and an afternoon of GPU time that never happened. One request
+        before the batch turns that into one clear line.
+        """
+        try:
+            request = urllib.request.Request(self.endpoint.replace("/api/chat", "/api/tags"))
+            with urllib.request.urlopen(request, timeout=10) as response:
+                body = json.loads(response.read().decode("utf-8", errors="replace"))
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            return (f"no hay servidor en {self.endpoint}: {exc}. "
+                    f"Arranca ollama (`ollama serve`) y vuelve a intentarlo.")
+        names = {m.get("name") for m in body.get("models", []) if isinstance(m, dict)}
+        if names and self.model not in names:
+            return (f"el modelo {self.model!r} no esta instalado. "
+                    f"Disponibles: {', '.join(sorted(n for n in names if n))[:300]}")
+        return None
+
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
         payload: dict[str, Any] = {
             "model": self.model,
