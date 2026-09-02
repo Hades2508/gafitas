@@ -229,6 +229,21 @@ def _no_edit_note(turn: int, changed: int, max_turns: int) -> str:
             f"hazlo ahora con edit o replace_lines.]")
 
 
+def _error_repeat_note(count: int, tool_name: str, code: str | None) -> str:
+    """Name a repeated identical failure (F-43).
+
+    Deliberately blunt at the third occurrence. By then the agent has received
+    the same correction twice and acted on neither, so a gentler phrasing has
+    already been tried -- twice.
+    """
+    if count < 3:
+        return ""
+    return (f"\n[Es la {count}a vez seguida que {tool_name} falla con {code}. "
+            f"Lo que estas intentando NO esta funcionando y repetirlo dara lo mismo. "
+            f"Cambia de enfoque: vuelve a LEER el fichero para ver como esta de "
+            f"verdad, o usa otra herramienta.]")
+
+
 def _repeat_note(count: int, tool_name: str) -> str:
     """Say that nothing changed, when nothing changed (F-23).
 
@@ -287,10 +302,16 @@ def run_loop(
     consecutive_dead = 0
     last_payload: tuple[str, str] | None = None
     repeat_count = 0
+    last_tool_error: tuple[str, str] | None = None
+    error_repeat = 0
 
     try:
         for turn in range(1, max_turns + 1):
             result.turns_used = turn
+            # finish() weighs 'I am stuck' against 'I have barely
+            # started', so it needs to know where we are (F-45).
+            ctx.turns_left = max_turns - turn
+            ctx.max_turns_hint = max_turns
             messages = transcript.messages()
             result.elisions = transcript.elisions
 
@@ -396,9 +417,20 @@ def run_loop(
                 events.append({"turn": turn, "tool": "finish", "ok": True, "no_changes": True})
                 break
 
+            # F-43: the same error, again. F-23 says an identical RESULT twice
+            # running means nothing changed; an identical ERROR is the same fact
+            # and more urgent, because it means feedback the agent is already
+            # receiving is not reaching its decisions. ga04 was refused the same
+            # way ten times while sitting on 14 of 16 tests green.
+            error_key = (outcome.name, outcome.code or "")
+            error_repeat = error_repeat + 1 if error_key == last_tool_error else 1
+            last_tool_error = error_key
+            feedback = (outcome.feedback or "") + _error_repeat_note(
+                error_repeat, outcome.name, outcome.code
+            )
             transcript.add(Turn(
                 number=turn, assistant=assistant, tool_name=outcome.name,
-                tool_payload=(outcome.feedback or "") + _budget_note(turn, max_turns),
+                tool_payload=feedback + _budget_note(turn, max_turns),
                 is_error=True,
             ))
             events.append({"turn": turn, "tool": outcome.name, "ok": False,

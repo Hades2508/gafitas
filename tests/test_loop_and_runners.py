@@ -334,3 +334,33 @@ def test_workspace_is_preserved_on_failure_and_removed_on_success():
     assert not box2.path.exists()
     import shutil
     shutil.rmtree(box.path, ignore_errors=True)
+
+
+def test_a_repeated_identical_error_is_named(ctx):
+    """F-43. ga04 received the same refusal ten times and acted on none of
+    them. An identical error is the same fact as an identical result -- and
+    more urgent, because it means feedback already arriving is not reaching the
+    agent's decisions."""
+    provider = FakeProvider([tc("edit", path="calc.py", old="NOPE", new="x")] * 5)
+    loop.run_loop(provider=provider, ctx=ctx, system="S", objective="O", max_turns=5)
+    delivered = str(provider.calls[-1]["messages"])
+    assert "vez seguida" in delivered
+    assert "Cambia de enfoque" in delivered
+
+
+def test_two_identical_errors_are_not_yet_nagged(ctx):
+    """By the third the agent has had the same correction twice. Before that,
+    the ordinary feedback deserves a chance to work."""
+    provider = FakeProvider([tc("edit", path="calc.py", old="NOPE", new="x")] * 2)
+    loop.run_loop(provider=provider, ctx=ctx, system="S", objective="O", max_turns=2)
+    assert "vez seguida" not in str(provider.calls[-1]["messages"])
+
+
+def test_different_errors_do_not_accumulate(ctx):
+    provider = FakeProvider([
+        tc("edit", path="calc.py", old="NOPE", new="x"),
+        tc("read_file", path="missing.py"),
+        tc("edit", path="calc.py", old="NOPE", new="x"),
+    ])
+    loop.run_loop(provider=provider, ctx=ctx, system="S", objective="O", max_turns=3)
+    assert "vez seguida" not in str(provider.calls[-1]["messages"])

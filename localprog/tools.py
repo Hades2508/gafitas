@@ -138,6 +138,18 @@ class ToolContext:
     #: agent is told, and finish(DONE) refuses while this is non-empty.
     known_regressions: list = field(default_factory=list)
     collateral_checked: bool = False
+    #: The tail of the last failing run_tests output. Kept so a refusal
+    #: can quote what is actually wrong instead of telling the agent to
+    #: go and look at something it has already looked at (F-42).
+    last_test_failure: str = ''
+    #: Node ids reported failing by the last run_tests.
+    last_failing_tests: list = field(default_factory=list)
+    #: Whether a premature BLOCKED has already been questioned once.
+    blocked_once: bool = False
+    #: Budget state, written by the loop each turn so finish can weigh
+    #: 'I am stuck' against 'I have barely started'.
+    turns_left: int | None = None
+    max_turns_hint: int = 0
     _scope: WriteScope | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -871,12 +883,26 @@ def run_tests(ctx: ToolContext, node_ids: Any = None) -> dict:
     covers_acceptance = set(ctx.acceptance_tests) <= {_normalise(t) for t in targets}
     if passed and covers_acceptance:
         ctx.tests_green = True
+    output = (proc.stdout + proc.stderr)[-TEST_OUTPUT_TAIL:]
     result = {
         "passed": passed,
         "exit_code": proc.returncode,
         "timed_out": False,
-        "output": (proc.stdout + proc.stderr)[-TEST_OUTPUT_TAIL:],
+        "output": output,
     }
+    # F-42: remember what failed. Several turns later this output has been
+    # elided, and an agent being refused a finish cannot be expected to recall
+    # it -- but the harness can simply keep it.
+    if not passed:
+        ctx.last_test_failure = output[-1500:]
+        ctx.last_failing_tests = sorted({
+            line.split(" - ")[0].removeprefix("FAILED ").removeprefix("ERROR ").strip()
+            for line in output.splitlines()
+            if line.startswith("FAILED ") or line.startswith("ERROR ")
+        })
+    else:
+        ctx.last_test_failure = ""
+        ctx.last_failing_tests = []
 
     # F-38. The acceptance suite is a sample. The conscience judges the whole
     # repository, and until now the agent could not see the difference: it ran
@@ -986,15 +1012,63 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
             f"correcto y esperado, explicalo con finish(status='BLOCKED').",
         )
     if normalised == "DONE" and ctx.acceptance_tests and not ctx.tests_green:
+        # F-42. Telling an agent to go and read output it has already read, and
+        # which has since been elided, is not feedback. ga04 was refused ten
+        # times this way while sitting on 14 of 16 tests green. What it needed
+        # was the name of the one that was not.
+        detail = ""
+        if ctx.last_failing_tests:
+            detail = (
+                "\n  Lo que falla ahora mismo: "
+                + ", ".join(ctx.last_failing_tests[:6])
+                + ("" if len(ctx.last_failing_tests) <= 6 else " ...")
+            )
+        if ctx.last_test_failure:
+            detail += "\n  Ultimo error:\n" + "\n".join(
+                "    " + l for l in ctx.last_test_failure.strip().splitlines()[-12:]
+            )
         raise ToolError(
             ERROR_NOT_VERIFIED,
-            "no puedes terminar con status='DONE' sin haber visto pasar los tests.\n"
-            "  Llama a run_tests() y lee el resultado.\n"
-            "  Si pasan, vuelve a llamar a finish(status='DONE').\n"
-            "  Si fallan, la salida te dice exactamente que arreglar, y todavia "
-            "te quedan turnos.\n"
-            "  Si ves que no vas a poder: finish(status='BLOCKED', summary='<que te "
-            "lo impide>').",
+            "no puedes terminar con status='DONE': los tests de aceptacion no "
+            "estan en verde." + (detail or "\n  Ejecuta run_tests() y lee el resultado.")
+            + "\n  Arregla eso y vuelve a ejecutar run_tests. Si de verdad no puedes: "
+            "finish(status='BLOCKED', summary='<que te lo impide>').",
+        )
+    # F-45. BLOCKED is a good outcome and must stay cheap to reach -- but
+    # "I tried once and it did not work" is not "I cannot do this", and the
+    # harness cannot tell them apart without asking. ga07 gave up on turn 10 of
+    # 40 after a single failed import fix.
+    #
+    # So the FIRST blocked, while the acceptance has never once been green and
+    # a third of the budget is unspent, is answered with the last failure and
+    # one question. A second BLOCKED is accepted immediately, always -- the same
+    # shape as the double-finish that already confirms NO_CHANGE.
+    if (
+        normalised == "BLOCKED"
+        and ctx.acceptance_tests
+        and not ctx.blocked_once
+        and ctx.turns_left is not None
+        # A floor as well as a fraction: on a 4-turn budget a third is one
+        # turn, and spending it on a question leaves nothing to act on.
+        and ctx.turns_left >= max(5, ctx.max_turns_hint // 3)
+        and not ctx.tests_green
+    ):
+        ctx.blocked_once = True
+        detail = ""
+        if ctx.last_failing_tests:
+            detail = "\n  Lo que falla: " + ", ".join(ctx.last_failing_tests[:6])
+        if ctx.last_test_failure:
+            detail += "\n  Ultimo error:\n" + "\n".join(
+                "    " + l for l in ctx.last_test_failure.strip().splitlines()[-10:]
+            )
+        raise ToolError(
+            ERROR_NOT_VERIFIED,
+            f"antes de darte por vencido: todavia te quedan {ctx.turns_left} turnos."
+            + detail
+            + "\n  Si se te ocurre algo mas que probar, hazlo: lee el fichero otra vez, "
+            "ejecuta algo con run, o prueba otro enfoque.\n"
+            "  Si de verdad estas atascado, vuelve a llamar a finish(status='BLOCKED') "
+            "y lo acepto sin mas preguntas.",
         )
     ctx.finish_status = normalised
     ctx.finish_summary = summary.strip()

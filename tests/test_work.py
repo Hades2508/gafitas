@@ -143,6 +143,7 @@ def test_an_honest_miss_is_a_fail_not_a_pass(repo, tmp_path):
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 3"),
             tc("run_tests"),
             tc("finish", summary="creo que lo he arreglado", status="BLOCKED"),
+            tc("finish", summary="creo que lo he arreglado", status="BLOCKED"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
     )
@@ -290,6 +291,7 @@ def test_a_blocked_agent_whose_work_is_actually_broken_still_fails(repo, tmp_pat
         provider_factory=scripted(
             tc("edit", path="pkg/calc.py", old="n / 0", new="n / 7"),
             tc("run_tests"),
+            tc("finish", summary="no puedo", status="BLOCKED"),
             tc("finish", summary="no puedo", status="BLOCKED"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
@@ -617,3 +619,105 @@ def test_the_full_suite_check_is_skipped_when_the_ticket_disables_it(repo, tmp_p
     assert result.outcome == work.PASS
     names = {s["name"] for s in result.conscience["signals"]}
     assert "no_collateral_regression" not in names
+
+
+# ------------------------------------------------------------ F-42/F-43/F-45
+
+
+def test_a_refused_finish_says_which_test_is_failing(repo, tmp_path):
+    """ga04 reached 14 of 16 acceptance tests green and then spent ten turns on
+    finish(DONE) -> refused -> a blind edit -> NO_MATCH -> finish(DONE) again.
+
+    The refusal told it to run the tests and read the output. It HAD run them;
+    what it could not do was remember which one failed, because that output was
+    several turns back and elided. The harness had it the whole time."""
+    seen = {}
+
+    def watcher(_model):
+        provider = FakeProvider([
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 9"),
+            tc("run_tests"),
+            tc("finish", summary="ya esta", status="DONE"),   # refused
+            tc("finish", summary="me rindo", status="BLOCKED"),
+            tc("finish", summary="me rindo", status="BLOCKED"),
+        ])
+        seen["provider"] = provider
+        return provider
+
+    work.run_ticket(ticket(repo), "fake", provider_factory=watcher,
+                    out_dir=tmp_path / "out", base_dir=tmp_path)
+    delivered = json.dumps(seen["provider"].calls[-1]["messages"], ensure_ascii=False)
+    assert "test_halve" in delivered, "the refusal must name the failing test"
+    assert "Ultimo error" in delivered or "Lo que falla" in delivered
+
+
+def test_a_premature_blocked_is_questioned_once(repo, tmp_path):
+    """ga07 gave up on turn 10 of 40 after one failed import fix. BLOCKED must
+    stay cheap to reach, but 'I tried once' is not 'I cannot do this'."""
+    seen = {}
+
+    def watcher(_model):
+        provider = FakeProvider([
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 9"),
+            tc("run_tests"),
+            tc("finish", summary="no puedo", status="BLOCKED"),   # questioned
+            tc("edit", path="pkg/calc.py", old="n / 9", new="n / 2"),
+            tc("run_tests"),
+            tc("finish", summary="al final si pude", status="DONE"),
+        ])
+        seen["provider"] = provider
+        return provider
+
+    result = work.run_ticket(ticket(repo, max_turns=30), "fake", provider_factory=watcher,
+                             out_dir=tmp_path / "out", base_dir=tmp_path)
+    assert result.outcome == work.PASS, "asked once, it kept going and solved it"
+    delivered = json.dumps(seen["provider"].calls[-1]["messages"], ensure_ascii=False)
+    assert "te quedan" in delivered
+
+
+def test_a_second_blocked_is_always_accepted(repo, tmp_path):
+    """The question is asked once. An agent that says it twice is believed --
+    otherwise the harness is arguing with it instead of listening."""
+    result = work.run_ticket(
+        ticket(repo, max_turns=30), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 9"),
+            tc("run_tests"),
+            tc("finish", summary="no puedo", status="BLOCKED"),
+            tc("finish", summary="de verdad que no puedo", status="BLOCKED"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert result.finish_status == "BLOCKED"
+    assert result.outcome == work.FAIL
+
+
+def test_blocked_near_the_end_of_the_budget_is_not_questioned(repo, tmp_path):
+    """With almost no budget left there is nothing to go back to, and asking
+    would just burn the last turn."""
+    result = work.run_ticket(
+        ticket(repo, max_turns=4), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 9"),
+            tc("run_tests"),
+            tc("finish", summary="no llego", status="BLOCKED"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert result.finish_status == "BLOCKED"
+
+
+def test_blocked_is_not_questioned_once_the_tests_are_green(repo, tmp_path):
+    """An agent whose acceptance is green and who still says BLOCKED knows
+    something the suite does not. That is worth hearing, not arguing with."""
+    result = work.run_ticket(
+        ticket(repo, max_turns=30), "fake",
+        provider_factory=scripted(
+            tc("edit", path="pkg/calc.py", old="n / 0", new="n / 2"),
+            tc("run_tests"),
+            tc("finish", summary="pasa pero no me convence", status="BLOCKED"),
+        ),
+        out_dir=tmp_path / "out", base_dir=tmp_path,
+    )
+    assert result.finish_status == "BLOCKED"
+    assert result.outcome == work.PASS_UNCONFIRMED
