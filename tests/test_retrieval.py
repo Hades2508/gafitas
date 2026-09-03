@@ -463,3 +463,53 @@ def test_an_ordinary_ranged_read_is_left_alone(tmp_path):
     ctx = tools.ToolContext(root=tmp_path)
     out = tools.dispatch(ctx, "read_file", {"path": "m.py", "start": 1, "end": 2})
     assert "definicion(es)" not in out.value
+
+
+# ------------------------------- a scope that names nothing is not a result
+
+def test_a_prefix_that_names_nothing_searches_everywhere_and_says_so(tmp_path):
+    """F-69, from the java holdout.
+
+    Java repositories have deep conventional layouts and the model knows the
+    convention: of 219 search_code calls there, 166 carried a path and 75 came
+    back empty, on prefixes like 'src/main/java/org/apache/flink/ml/common/' --
+    exactly right for a Maven project and not where these files live. The tool
+    answered "ninguna region coincide" every time, which is false: regions
+    matched, none of them were under a directory that does not exist. The agent
+    read that as "not in this repository" and searched elsewhere.
+    """
+    deep = tmp_path / "java" / "org" / "x"
+    deep.mkdir(parents=True)
+    (deep / "Fmt.java").write_text(
+        "public class Fmt {\n    public String wrapLine(String t) { return t; }\n}\n",
+        encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "search_code",
+                         {"query": "wrap a line of text", "path": "src/main/java/org/x"})
+    assert out.ok, "an imaginary directory must not cost the whole call"
+    assert out.value["candidates"], "it searched the repository instead"
+    note = out.value["note"]
+    assert "ERROR_SEARCH_SCOPE_EMPTY" in note
+    assert "java/" in note, "and it names the directories that do exist"
+
+
+def test_a_real_prefix_with_no_matches_still_says_no_matches(tmp_path):
+    """The two cases must stay distinguishable in the other direction too."""
+    (tmp_path / "java").mkdir()
+    (tmp_path / "java" / "A.java").write_text(
+        "public class A {\n    public int size() { return 1; }\n}\n", encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "search_code",
+                         {"query": "quaternion holography", "path": "java"})
+    assert not out.ok and out.code == ERROR_NO_MATCH
+    assert "SI existe" in out.feedback
+
+
+def test_a_real_prefix_still_restricts_the_search(tmp_path):
+    for name in ("kept", "other"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "m.py").write_text("def widget():\n    pass\n", encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "search_code", {"query": "widget", "path": "kept"})
+    assert out.ok
+    assert {c["path"] for c in out.value["candidates"]} == {"kept/m.py"}

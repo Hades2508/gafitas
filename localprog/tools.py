@@ -744,6 +744,19 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
         prefix = "" if prefix == "." else prefix.rstrip("/") + "/"
 
     index = ctx.index()
+    scope_note = ""
+    if prefix and not any(r.path.startswith(prefix) for r in index.regions):
+        # F-69: the prefix names nothing indexed. Answering "no match" here is
+        # false -- regions matched, none of them are under a directory that does
+        # not exist -- and it reads as "the function is not in this repository".
+        real = sorted({r.path.split("/")[0] + "/" for r in index.regions if "/" in r.path})
+        scope_note = (
+            f"{NEWLINE}[{ERROR_SEARCH_SCOPE_EMPTY}: no hay ningun fichero indexado "
+            f"bajo {prefix!r}, asi que he buscado en TODO el repositorio en vez de "
+            f"no devolverte nada. Los directorios de primer nivel que si existen "
+            f"son: {', '.join(real[:10]) or '(ninguno, todo esta en la raiz)'}.]"
+        )
+        prefix = ""
     if not len(index):
         raise ToolError(
             ERROR_SEARCH_SCOPE_EMPTY,
@@ -759,7 +772,7 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
         known, unknown = index.matched_terms(query)
         detail = f"ninguna region coincide con {query!r}"
         if prefix:
-            detail += f" bajo {prefix!r}"
+            detail += f" bajo {prefix!r} (ese directorio SI existe)"
         if unknown:
             detail += (". Estas palabras no aparecen en NINGUN sitio del repositorio: "
                        + ", ".join(unknown[:8]))
@@ -788,7 +801,7 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
         "note": ("[candidatos ordenados por parecido con tu descripcion, no por "
                  "certeza: el primero no tiene por que ser el bueno. Mira las "
                  "declaraciones y lee con read_symbol o read_file(start, end) "
-                 "el que encaje.]"),
+                 "el que encaje.]") + scope_note,
     }
 
 
