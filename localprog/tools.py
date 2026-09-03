@@ -1673,12 +1673,30 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
             f"status debe ser uno de {', '.join(FINISH_STATUSES)}; recibido {status!r}",
         )
     if normalised == "DONE" and not ctx.changed_files:
+        # F-71. The work first, the exits second. This message used to offer
+        # only NO_CHANGE and BLOCKED, and a weaker engine reads the options it
+        # is given: 17 of 50 granite4.1:3b runs took the NO_CHANGE door while
+        # the file the mission was waiting for had never been written.
+        pending = [name for name in ctx.allowed_new_files
+                   if not (ctx.root / name).exists()]
+        wanted = ""
+        if pending:
+            wanted = (
+                f"\n  ESTA MISION ESPERA QUE CREES: {', '.join(pending[:4])}. "
+                f"Todavia no existe.\n"
+                f"  Para crearlo: write_file(path='{pending[0]}', content=<el texto "
+                f"entero>). El contenido va en el argumento, no en tu respuesta."
+            )
+        elif ctx.write_scope:
+            wanted = (f"\n  Puedes escribir en: {', '.join(ctx.write_scope[:4])}. "
+                      f"Usa edit o replace_lines sobre lo que haya que cambiar.")
         raise ToolError(
             ERROR_NOTHING_CHANGED,
-            "no has editado nada, asi que no puedes terminar con status='DONE'.\n"
-            "  Si de verdad no hace falta ningun cambio: finish(status='NO_CHANGE', "
-            "summary='<por que>').\n"
-            "  Si no puedes continuar: finish(status='BLOCKED', summary='<que te lo impide>').",
+            "no has editado nada, asi que no puedes terminar con status='DONE'."
+            + wanted
+            + "\n  Si de verdad no hace falta ningun cambio: finish(status='NO_CHANGE', "
+              "summary='<por que>').\n"
+              "  Si no puedes continuar: finish(status='BLOCKED', summary='<que te lo impide>').",
         )
     # F-29: DONE means "I did it and I checked", not "I did something".
     #

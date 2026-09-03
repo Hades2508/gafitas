@@ -175,7 +175,11 @@ def parse_native_call(message: dict) -> ParsedCall:
     if not calls or not isinstance(calls, list):
         raise InvalidCall(
             ERROR_NO_TOOL_CALL,
-            "no emitiste ninguna llamada de herramienta. Llama a una de las herramientas.",
+            "no emitiste ninguna llamada de herramienta, solo texto. El texto de "
+            "una respuesta se descarta: lo unico que hace algo es una llamada.\n"
+            "  Si lo que escribiste era el CONTENIDO de un fichero, pasalo como "
+            "argumento: write_file(path=..., content=<ese texto>).\n"
+            "  Si querias mirar algo, llama a la herramienta que lo mira.",
         )
     first = calls[0]
     if not isinstance(first, dict):

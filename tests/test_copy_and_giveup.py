@@ -193,3 +193,57 @@ def test_it_still_fires_when_there_is_no_suite_to_point_at(repo):
         tc("finish", summary="no puedo", status="BLOCKED"),
     ])
     assert "NO has abierto" in "\n".join(shown)
+
+
+# ------------------------- F-71: a refusal that offers only exits is a trapdoor
+
+def test_the_done_refusal_leads_with_the_work_not_the_exits(repo):
+    """From the first second-engine comparison.
+
+    granite4.1:3b answers the same task at 48% in one prompt and 6% through
+    GAFITAS -- 21 paired losses, zero wins. 35 of 50 runs never called
+    write_file, and finish was refused 76 times for having changed nothing. The
+    refusal offered two ways to quit and none to proceed, and 17 runs took the
+    NO_CHANGE door while the file the mission wanted had never been written.
+    """
+    ctx = tools.ToolContext(root=repo, write_scope=(),
+                            allowed_new_files=("ANSWER.txt",),
+                            turns_left=10, max_turns_hint=20)
+    out = tools.dispatch(ctx, "finish", {"summary": "ya esta", "status": "DONE"})
+    assert not out.ok and out.code == "ERROR_NOTHING_CHANGED"
+    message = out.feedback
+    assert "ESPERA QUE CREES: ANSWER.txt" in message
+    assert "write_file(path='ANSWER.txt'" in message
+    assert message.index("ESPERA QUE CREES") < message.index("NO_CHANGE"), (
+        "the work has to come before the exits, or the exits are what gets read"
+    )
+
+
+def test_it_names_the_write_scope_when_there_is_no_new_file_expected(repo):
+    ctx = tools.ToolContext(root=repo, write_scope=("pkg/**",),
+                            turns_left=10, max_turns_hint=20)
+    out = tools.dispatch(ctx, "finish", {"summary": "ya", "status": "DONE"})
+    assert "Puedes escribir en: pkg/**" in out.feedback
+
+
+def test_a_file_already_created_is_not_demanded_again(repo):
+    (repo / "ANSWER.txt").write_text("done", encoding="utf-8")
+    ctx = tools.ToolContext(root=repo, write_scope=(),
+                            allowed_new_files=("ANSWER.txt",),
+                            turns_left=10, max_turns_hint=20)
+    out = tools.dispatch(ctx, "finish", {"summary": "ya", "status": "DONE"})
+    assert "ESPERA QUE CREES" not in out.feedback
+
+
+def test_prose_with_no_call_is_told_what_shape_to_use():
+    """A weaker engine narrates the answer instead of calling the tool, and the
+    correction used to say only that a call was missing."""
+    from localprog import protocol
+    from localprog.errors import InvalidCall
+    try:
+        protocol.parse("A", {"content": "aqui esta el codigo que me pediste"})
+    except InvalidCall as exc:
+        assert "write_file(path=..., content=" in exc.feedback()
+        assert "se descarta" in exc.feedback()
+    else:
+        raise AssertionError("prose with no tool call must be refused")
