@@ -891,6 +891,10 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
         "rank": n,
         "path": region.path,
         "lines": f"{region.start}-{region.end}",
+        # The identifier, spelled out. Without it the agent has to parse it back
+        # out of the declaration line before it can name it in a call, and
+        # naming it in a call is the whole difference between 95% and 7%.
+        "symbol": region.name,
         "declares": region.header,
         "preview": region.preview,
         "score": round(score, 2),
@@ -901,14 +905,27 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
         if entry not in ctx.top_candidates:
             ctx.top_candidates.append(entry)
 
+    # The next call, filled in, rather than the name of a kind of call.
+    # Measured: an agent that NAMES the symbol answers correctly 95% of the time
+    # (reference engine, 20 of 50 runs); one that only opens the file, 64%, and
+    # for granite4.1:3b 7%. The gap is not comprehension, it is which call gets
+    # made next, so the result says which call to make next.
+    top = candidates[0]
+    pending = [n for n in ctx.allowed_new_files if not (ctx.root / n).exists()]
+    next_call = (f"{NEWLINE}  Para ver uno entero, tal cual esta: "
+                 f"read_symbol(path={top['path']!r}, name={top['symbol']!r}).")
+    if pending:
+        next_call += (f"{NEWLINE}  Para ponerlo en {pending[0]} sin reescribirlo: "
+                      f"copy_code(src={top['path']!r}, into={pending[0]!r}, "
+                      f"name={top['symbol']!r}).")
     return {
         "query": query,
         "candidates": candidates,
         "indexed": {"regions": len(index), "files": index.files_indexed},
         "note": ("[candidatos ordenados por parecido con tu descripcion, no por "
                  "certeza: el primero no tiene por que ser el bueno. Mira las "
-                 "declaraciones y lee con read_symbol o read_file(start, end) "
-                 "el que encaje.]") + scope_note,
+                 "declaraciones y quedate con el que encaje."
+                 + next_call + "]") + scope_note,
     }
 
 
