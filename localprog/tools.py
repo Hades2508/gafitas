@@ -1677,6 +1677,12 @@ def _navigation_note(ctx: ToolContext) -> str:
     """
     if not ctx.top_candidates:
         return ""
+    if ctx.acceptance_tests:
+        # There is a suite, so the open question is not "where is it" -- it is
+        # "why is that test red", and the gate answers that a few lines above.
+        # Pointing at unopened search candidates here sends an agent that knows
+        # exactly what is failing off to read files instead.
+        return ""
     unopened = [c for c in ctx.top_candidates if c[0] not in ctx.opened]
     if not unopened:
         return (f"{NEWLINE}  Has abierto los {len(ctx.top_candidates)} mejores "

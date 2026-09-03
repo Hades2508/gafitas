@@ -212,3 +212,36 @@ def test_the_case_it_was_built_for(ctx, repo):
     out = call(ctx, "edit", path="d.py", old="    return out",
                new="    return out\n    return out")
     assert "ERROR_UNREACHABLE_CODE" in out.value
+
+
+def test_the_navigation_note_stays_out_of_a_verification_gate(repo):
+    """The note is a RETRIEVAL hint and it was being injected into a
+    VERIFICATION gate.
+
+    Measured: the full battery scored 11/11 on the pre-round-2 code and 9/11
+    with the note unscoped, and repeating the two tickets that moved gave 10/10
+    against 4/8 (Fisher p = 0.008). An agent trying to make a failing test pass,
+    told at the moment it tries to stop that search_code returned candidates it
+    never opened, goes and opens them -- right on a mission whose difficulty is
+    finding something, a detour on one that already knows which test is red.
+    """
+    ctx = tools.ToolContext(root=repo, write_scope=("**/*.py",),
+                            acceptance_tests=("tests/test_x.py",))
+    _result, shown = drive(ctx, [
+        tc("search_code", query="add one to a number"),
+        tc("finish", summary="no puedo", status="BLOCKED"),
+        tc("finish", summary="no puedo", status="BLOCKED"),
+    ])
+    joined = "\n".join(shown)
+    assert "antes de darte por vencido" in joined, "the gate itself still fires"
+    assert "NO has abierto" not in joined, "but not with retrieval advice"
+
+
+def test_it_still_fires_when_there_is_no_suite_to_point_at(repo):
+    ctx = tools.ToolContext(root=repo, write_scope=("**/*.py",), acceptance_tests=())
+    _result, shown = drive(ctx, [
+        tc("search_code", query="add one to a number"),
+        tc("finish", summary="no puedo", status="BLOCKED"),
+        tc("finish", summary="no puedo", status="BLOCKED"),
+    ])
+    assert "NO has abierto" in "\n".join(shown)
