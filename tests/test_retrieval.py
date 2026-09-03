@@ -513,3 +513,46 @@ def test_a_real_prefix_still_restricts_the_search(tmp_path):
     out = tools.dispatch(ctx, "search_code", {"query": "widget", "path": "kept"})
     assert out.ok
     assert {c["path"] for c in out.value["candidates"]} == {"kept/m.py"}
+
+
+# ------------------------------ read_symbol says when it handed back a class
+
+def test_read_symbol_says_a_class_is_a_class_and_lists_its_methods(tmp_path):
+    """F-70. Ten of the remaining dev failures were the same shape: the right
+    place, read_symbol, and an answer three to forty times longer than the
+    function wanted -- 13094 characters for a 245-character method in one case.
+    read_symbol on a class returns the whole class, quite correctly, and said
+    nothing about having done so."""
+    (tmp_path / "m.py").write_text(
+        "class Ctx:\n"
+        "    def __init__(self):\n        pass\n\n"
+        "    def rename(self, n):\n        return n\n",
+        encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_symbol", {"path": "m.py", "name": "Ctx"})
+    assert out.ok
+    assert "es una CLASE entera" in out.value
+    assert "__init__, rename" in out.value
+    assert "'Ctx.__init__'" in out.value, "and how to ask for one of them"
+
+
+def test_a_method_is_not_accused_of_being_a_class(tmp_path):
+    (tmp_path / "m.py").write_text(
+        "class Ctx:\n    def rename(self, n):\n        return n\n", encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_symbol", {"path": "m.py", "name": "Ctx.rename"})
+    assert out.ok and "CLASE entera" not in out.value
+
+
+def test_a_plain_function_says_nothing_extra(tmp_path):
+    (tmp_path / "m.py").write_text("def free():\n    return 1\n", encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_symbol", {"path": "m.py", "name": "free"})
+    assert out.ok and "CLASE" not in out.value
+
+
+def test_a_class_with_no_methods_is_not_worth_a_warning(tmp_path):
+    (tmp_path / "m.py").write_text("class Empty:\n    x = 1\n", encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path)
+    out = tools.dispatch(ctx, "read_symbol", {"path": "m.py", "name": "Empty"})
+    assert out.ok and "CLASE entera" not in out.value

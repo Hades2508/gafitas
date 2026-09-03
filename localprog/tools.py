@@ -1032,10 +1032,29 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
             f"\n[{name} ocupa las lineas {start}-{end}; te muestro hasta la "
             f"{start + shown - 1}. Usa read_file('{rel}', start=, end=) para el resto]"
         )
+    # F-70: say when what came back is a container rather than a behaviour.
+    # Ten dev failures were the same shape -- the right place, read_symbol, and
+    # then an answer three to forty times longer than the function wanted,
+    # because read_symbol on a class returns the whole class and never said so.
+    inside = ""
+    if isinstance(node, ast.ClassDef):
+        methods = [child.name for child in node.body
+                   if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        if methods:
+            shown = ", ".join(methods[:12]) + (" ..." if len(methods) > 12 else "")
+            inside = (
+                f"{NEWLINE}[OJO: {name!r} es una CLASE entera de "
+                f"{end - start + 1} lineas, no una funcion. Contiene "
+                f"{len(methods)} metodos: {shown}."
+                f"{NEWLINE}  Si lo que buscabas es UNO de ellos, pidelo por su "
+                f"nombre: read_symbol({rel!r}, '{name}.{methods[0]}'). "
+                f"Copiar la clase entera cuando querias un metodo es el error "
+                f"mas caro que se puede cometer aqui.]"
+            )
     return (
         f"{rel}::{name}  (lineas {start}-{end}; la primera de abajo es la "
         f"{start}). El codigo va TAL CUAL esta en el fichero, sin numerar: "
-        f"puedes copiarlo literalmente." + NEWLINE + body
+        f"puedes copiarlo literalmente." + inside + NEWLINE + body
     )
 
 
