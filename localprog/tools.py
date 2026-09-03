@@ -1375,10 +1375,31 @@ def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
             "copy_code toma name= O start=/end=, no las dos. Con name copias un "
             "simbolo entero; con start/end copias un rango de lineas.")
     if not has_name and not has_lines:
+        # The path is already resolved and the file is already read, so the
+        # question this call was asking -- "what can I copy out of here?" -- can
+        # be answered right now instead of being handed back as homework.
+        # granite4.1:3b reached for copy_code correctly on turn one with only
+        # the selector missing, was told to go and use list_symbols, did, and
+        # never came back. Where the harness can answer, it answers.
+        catalogue = ""
+        try:
+            names = sorted(_collect_symbols(ast.parse(source)))
+        except (SyntaxError, ValueError, RecursionError):
+            names = []
+        except ToolError:
+            names = []
+        if names:
+            shown = ", ".join(names[:15])
+            catalogue = (f"\n  En {src_rel!r} hay estos simbolos: {shown}"
+                         + (f" (+{len(names) - 15} mas)" if len(names) > 15 else "")
+                         + f".\n  Por ejemplo: copy_code(src={src_rel!r}, "
+                           f"into={into_rel!r}, name={names[0]!r})")
+        else:
+            catalogue = (f"\n  {src_rel!r} tiene {len(source.splitlines())} lineas; "
+                         f"copialas con start= y end=.")
         raise InvalidCall(
             ERROR_BAD_ARGUMENTS,
-            "copy_code necesita name=<simbolo> o start=/end=<lineas>. Para ver "
-            f"que hay en {src_rel!r}: list_symbols o read_file.")
+            "copy_code necesita name=<simbolo> o start=/end=<lineas>." + catalogue)
 
     lines = source.splitlines()
     if has_name:

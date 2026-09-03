@@ -130,12 +130,41 @@ def test_the_body_does_not_come_back_through_the_transcript(tmp_path):
 
 # ------------------------------------------------------------------- refusals
 
-def test_neither_selector_is_a_refusal_that_says_what_to_do(tmp_path):
+def test_neither_selector_lists_what_there_is_to_copy(tmp_path):
+    """Observed on granite4.1:3b: it reached for copy_code correctly on turn one
+    with only the selector missing, was told to go and use list_symbols, did,
+    and never came back. The harness had already resolved the path and read the
+    file -- it could answer the question the failed call was asking, so it
+    does. A refusal whose only content is what you did wrong has thrown away
+    the work it just did."""
     ctx = ctx_for(tmp_path)
     with pytest.raises(InvalidCall) as exc:
         tools.copy_code(ctx, "origen.py", "salida.py")
     assert exc.value.code == ERROR_BAD_ARGUMENTS
-    assert "list_symbols" in exc.value.detail
+    detail = exc.value.detail
+    assert "sencilla" in detail and "con_decorador" in detail
+    assert "copy_code(src='origen.py'" in detail
+
+
+def test_the_catalogue_falls_back_to_line_counts_without_a_parser(tmp_path):
+    """A language with no symbol index still gets something usable."""
+    (tmp_path / "a.rs").write_text(chr(10).join(["uno","dos","tres"]) + chr(10), encoding="utf-8")
+    ctx = tools.ToolContext(root=tmp_path, allowed_new_files=("salida.txt",))
+    with pytest.raises(InvalidCall) as exc:
+        tools.copy_code(ctx, "a.rs", "salida.txt")
+    assert "3 lineas" in exc.value.detail
+
+
+def test_the_catalogue_cannot_depend_on_the_objective(tmp_path):
+    """It lists the file's own declarations in name order. If it could be
+    ordered by relevance it would be a retrieval channel hiding in an error
+    message, and errors are not where retrieval belongs."""
+    ctx = ctx_for(tmp_path)
+    with pytest.raises(InvalidCall) as first:
+        tools.copy_code(ctx, "origen.py", "salida.py")
+    with pytest.raises(InvalidCall) as second:
+        tools.copy_code(ctx, "origen.py", "salida.py")
+    assert first.value.detail == second.value.detail
 
 
 def test_both_selectors_at_once_is_refused(tmp_path):
