@@ -870,6 +870,26 @@
    "cause": "copy_code was the only caller of _resolve(must_exist=True). The guard reports 'does not exist' as a ContainmentError and _resolve maps every ContainmentError to ERROR_PATH_OUTSIDE_REPO. Introduced with copy_code.",
    "fix": "copy_code resolves without must_exist and lets _read_text raise ERROR_FILE_NOT_FOUND with the directory's real contents, exactly as read_file always has. A real '..' is still a containment violation.",
    "note": "Same class as A3: a safety error standing in for an ordinary mistake."
+  },
+  {
+   "id": "F-82",
+   "priority": "P0",
+   "component": "affordance / selection",
+   "status": "FIXED_MEASUREMENT_PENDING",
+   "evidence": "Candidate recall separated from selection, 50 matched runs each. REACHED_THE_SYMBOL (called read_symbol or copy_code naming the file AND the symbol): 4B 20 cases -> 95% correct; granite4.1:3b 2 cases -> 100% correct. OPENED_THE_FILE only: 4B 28 -> 64%; granite 44 -> 7%. NEVER_OPENED_IT: 4B 2 -> 50%; granite 4 -> 0%.",
+   "impact": "When either engine NAMES the symbol it is right essentially every time. Granite's whole deficit is that it names it twice in fifty where the 4B names it twenty times. That is an affordance problem, not an intelligence one -- and it means retrieval cannot fix the remaining gap, which is where effort would otherwise have gone.",
+   "cause": "search_code's note named a CATEGORY of next action ('lee con read_symbol o read_file(start, end)'). The engines that turn that into a concrete call score 95%; the ones that do not, 7%.",
+   "fix": "The note shows the call, filled in from the top candidate, and every candidate carries its symbol name. The copy_code line appears only when the mission is waiting for a file that does not exist, the same deterministic predicate legal_tools uses. The ranking caveat stays: an affordance that also became a claim of certainty would be worse than the abstraction it replaced."
+  },
+  {
+   "id": "F-83",
+   "priority": "P2",
+   "component": "write discipline",
+   "status": "FIXED",
+   "evidence": "Of the reference engine's first eleven runs after F-75, two wrote their answer SIX and NINE times, at 17 and 20 turns; the rest wrote once or twice.",
+   "impact": "F-75 removed a real trap and the door it opened was walked through.",
+   "cause": "Nothing distinguished self-correction from re-guessing.",
+   "fix": "A note, never a refusal (F-63), when a third write happens with no read, search or run since the previous one. A failed lookup does not count as learning: an error is feedback about the call, not information about the code."
   }
  ],
  "safety_record": {
