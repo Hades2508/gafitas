@@ -448,3 +448,36 @@ def test_a_context_overflow_is_named_and_never_scored():
 
     result = loop.LoopResult(outcome=loop.PROVIDER_ERROR)
     assert result.scoreable is False
+
+
+def test_legal_tools_cannot_reach_the_frozen_screen():
+    """A5. legal_tools makes the declared surface a function of mission state,
+    which is right for a mission and wrong for a frozen instrument: the screen's
+    surface must not move for ANY reason, including a good one.
+
+    The screen passes declare_tools explicitly, and run_loop honours an explicit
+    list over the computed one. This asserts that precedence directly, because
+    the alternative -- noticing later that a sealed instrument had quietly
+    started asking a different question -- is the failure this whole file exists
+    to prevent.
+    """
+    from localprog import loop, screen
+
+    # A screen-shaped scope would compute a DIFFERENT surface if it were asked.
+    computed = tools.legal_tools(tuple(screen.WRITE_SCOPE), ())
+    assert set(computed) != set(screen.FROZEN_TOOLS), (
+        "if these ever coincide this test proves nothing; pick a scope where "
+        "they differ")
+
+    import inspect
+    source = inspect.getsource(loop.run_loop)
+    assert "declare_tools if declare_tools is not None" in source, (
+        "run_loop must prefer an explicit declare_tools over the computed one")
+
+
+def test_copy_code_is_not_visible_to_the_frozen_screen():
+    from localprog import screen
+
+    assert "copy_code" not in screen.FROZEN_TOOLS
+    declared = {t["function"]["name"] for t in tools.native_schema(screen.FROZEN_TOOLS)}
+    assert "copy_code" not in declared

@@ -37,12 +37,18 @@ from .provider import OllamaProvider
 SCREEN_ID = "SCREEN_V0"
 
 #: The seven tools section D.3's prompt names, and the only ones this frozen
-#: instrument declares (F-20). list_dir and run were added to the harness after
-#: this screen was recorded; declaring them here would change the question the
+#: instrument declares (F-20). Everything since -- list_dir, run, search_code,
+#: read_symbol, replace_lines, copy_code -- was added to the harness after this
+#: screen was recorded; declaring any of them would change the question the
 #: screen asks and make its results incomparable with the runs already sealed in
-#: GATE-A-WS. dispatch still knows all nine -- a model that reaches for one of
-#: the other two gets ERROR_UNKNOWN_TOOL, exactly as it would have before they
+#: GATE-A-WS. dispatch still knows all thirteen; a model that reaches for one of
+#: the other six gets ERROR_UNKNOWN_TOOL, exactly as it would have before they
 #: were written.
+#:
+#: Passing declare_tools explicitly is also what keeps the screen outside
+#: legal_tools: the surface a mission's scope permits is the right rule for a
+#: mission and the wrong rule for a frozen instrument, whose surface must not
+#: move for any reason at all.
 FROZEN_TOOLS = (
     "read_file", "grep", "list_symbols", "edit", "write_file", "run_tests", "finish",
 )
