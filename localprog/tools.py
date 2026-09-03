@@ -784,11 +784,30 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
         raise InvalidCall(ERROR_BAD_ARGUMENTS,
                           f"limit debe ser un entero entre 1 y {MAX_SEARCH_LIMIT}")
     prefix = ""
+    only_file = ""
     if path is not None and str(path).strip() not in ("", ".", "/"):
-        prefix, _target = _resolve_dir(ctx, path)
-        prefix = "" if prefix == "." else prefix.rstrip("/") + "/"
+        prefix, target = _resolve_dir(ctx, path)
+        if target.is_file():
+            # A file is the narrowest scope there is, and it is exactly what an
+            # agent asks for when the mission has already named the file.
+            # Treating it as a directory prefix turned it into
+            # "src/black/nodes.py/", which nothing is indexed under, so F-69
+            # widened the search to the whole repository and answered from
+            # another file entirely. Every step was right and the sum ignored
+            # the only constraint the agent had expressed.
+            only_file, prefix = prefix, ""
+        else:
+            prefix = "" if prefix == "." else prefix.rstrip("/") + "/"
 
     index = ctx.index()
+    if only_file and not any(r.path == only_file for r in index.regions):
+        # The file exists but carved no regions -- not a source file, or empty.
+        # Saying so beats silently searching somewhere else.
+        raise ToolError(
+            ERROR_SEARCH_SCOPE_EMPTY,
+            f"{only_file!r} existe pero no tiene nada indexable (no es un fichero "
+            f"de codigo, o esta vacio). Quita path= para buscar en todo el "
+            f"repositorio, o usa grep si buscas un literal.")
     scope_note = ""
     if prefix and not any(r.path.startswith(prefix) for r in index.regions):
         # F-69: the prefix names nothing indexed. Answering "no match" here is
@@ -809,14 +828,20 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
         )
 
     # Over-fetch when filtering by path, so a subtree still yields `limit` rows.
-    raw = index.search(query, limit=limit if not prefix else min(limit * 20, 1000))
-    if prefix:
+    narrowed = prefix or only_file
+    raw = index.search(query, limit=limit if not narrowed else min(limit * 20, 1000))
+    if only_file:
+        raw = [pair for pair in raw if pair[0].path == only_file][:limit]
+    elif prefix:
         raw = [pair for pair in raw if pair[0].path.startswith(prefix)][:limit]
 
     if not raw:
         known, unknown = index.matched_terms(query)
         detail = f"ninguna region coincide con {query!r}"
-        if prefix:
+        if only_file:
+            detail += (f" dentro de {only_file!r} (ese fichero SI existe y esta "
+                       f"indexado). Quita path= para buscar en todo el repositorio")
+        elif prefix:
             detail += f" bajo {prefix!r} (ese directorio SI existe)"
         if unknown:
             detail += (". Estas palabras no aparecen en NINGUN sitio del repositorio: "
