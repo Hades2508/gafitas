@@ -769,6 +769,56 @@
    "fix": "NOT INTEGRATED. It was measured against the observed cluster before being adopted, and it does not attack it. Explorer stays available and unused here; if a future cluster turns out to be dependency or reference tracing, its graph is the right tool for that and this measurement says nothing against it.",
    "risk": "low",
    "dependencies": []
+  },
+  {
+   "id": "F-72",
+   "priority": "P0",
+   "component": "protocol / provider boundary",
+   "status": "FIXED",
+   "evidence": "Payload probe, 3 sizes x 2 channels x 3 engines. qwen2.5-coder:3b reproduces 400/1200/3000 characters of source as prose with line_recall 1.00 and got 0 of 3 through write_file. What it emitted was a correct call -- right name, right argument, right bytes -- whose JSON was broken by the docstring quotes inside its own payload. Ollama rejected it, message.tool_calls came back empty, the harness reported ERROR_NO_TOOL_CALL and discarded all of it. After repair.py: 3 of 3, recall 1.00 at every size.",
+   "impact": "The engine was recorded as supports_native_tools=false and scored 0% through GAFITAS against 52% in one prompt. Fifty runs were charged to the model for a harness that threw away work it had already done.",
+   "cause": "Both parsers treated 'the provider found no call' as 'the engine emitted no call'. Those are different facts.",
+   "fix": "localprog/repair.py. Three bounded deterministic tiers, reached ONLY from the raise site so a well-formed engine can never take the path; a recovered name that is not a real tool is refused; every recovery announced on ParsedCall.repaired. Red-teamed by Codex: oversized input is refused rather than half-recovered (it was silently truncating a 400k payload), and an object naming the same key twice is refused."
+  },
+  {
+   "id": "F-73",
+   "priority": "P0",
+   "component": "engine capabilities",
+   "status": "FIXED",
+   "evidence": "granite4.1:3b native channel: 200 ok, 400 ok, 800 ok, 1600 LOST -- above the cliff Ollama's parser for its template returns content EMPTY and tool_calls EMPTY, ~300 generated tokens gone, nothing left to repair. Text protocol, same engine, same sizes: every rung carried.",
+   "impact": "supports_native_tools=true was TRUE and worthless. The whole granite campaign ran on the protocol that could not carry a payload.",
+   "cause": "'Can it call a tool' was the wrong question. The question is how much it can carry through one, and that has a number.",
+   "fix": "native_payload_limit and text_payload_limit on EngineCapabilities, measured by persistence.measure_payload_limit, compared against PAYLOAD_FLOOR to choose the protocol. An unmeasured limit changes nothing, so every engine certified earlier keeps its protocol and its numbers stay comparable."
+  },
+  {
+   "id": "F-74",
+   "priority": "P1",
+   "component": "tool surface",
+   "status": "FIXED",
+   "evidence": "granite matched, first 23 runs after F-72: first tool called was edit 18 times, read_file 3, grep 2. ERROR_NOT_IN_WRITE_SCOPE 18, ERROR_NOTHING_CHANGED 33, only 5 of 23 runs looked at anything, median 3 turns. After legal_tools: first tool read_file 7, edit 4, search_code 1; 10 of 12 looked; 12 of 12 CANDIDATE.",
+   "impact": "The mission's write scope was empty and its only writable thing did not exist yet, so edit could not succeed for ANY argument. We declared it, the engine took the tool matching the verb in the objective, and quit.",
+   "cause": "The declared surface was constant. It is a function of mission state.",
+   "fix": "tools.legal_tools(write_scope, allowed_new_files), used for the schema and the text manual alike so the two tiers cannot disagree. Looking and finishing are never withheld. An ordinary ticket keeps all twelve tools. ERROR_NOT_IN_WRITE_SCOPE now leads with the work, as finish() did in F-71."
+  },
+  {
+   "id": "F-75",
+   "priority": "P1",
+   "component": "write scope",
+   "status": "FIXED",
+   "evidence": "ERROR_FILE_EXISTS 7 times in 12 granite runs. write_file refused with 'ya existe, usa edit'; edit refused with 'fuera de write_scope' because the scope was empty. No third door.",
+   "impact": "On a create-only mission the agent's own output file was unreachable after its first draft. The reference engine almost never hits it because it usually writes once and correctly -- which is how a defect survives being measured against a single engine.",
+   "cause": "allows(rel, creating=False) was false for a path the mission had just authorised the agent to create.",
+   "fix": "ToolContext.created_files: a file THIS RUN created may be rewritten. Keyed on what was actually created, not on allowed_new_files, so a mission naming an existing source file grants nothing. scope.py untouched."
+  },
+  {
+   "id": "F-76",
+   "priority": "P2",
+   "component": "reporting",
+   "status": "CORRECTED",
+   "evidence": "matched_python_pre_channel_fixes 74/66, _r2 72/62, _r3 74/64, matched_python 74/76. Five dogfood08 acceptance tests have been failing at HEAD since f97cde2.",
+   "impact": "I reported '72 vs 66' as the standing 4B result when the most recent run was 74/76, and reported '521 passed' when five tests were red.",
+   "cause": "Quoting an earlier run and an earlier tally instead of re-reading them.",
+   "fix": "The 4B's matched result varies 62-76 against a stable 72-74 baseline, so no single run demonstrates amplification and it is reported as PRESERVED with the spread stated. dogfood08's suite is xfail with its FAIL recorded."
   }
  ],
  "safety_record": {
