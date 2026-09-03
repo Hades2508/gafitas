@@ -292,3 +292,42 @@ def retain(base: Path, *, max_age_days: float | None = None,
         "dry_run": dry_run,
         "log": str(log),
     }
+
+
+def adopt(base: Path, prefix: str = "gafitas_", dry_run: bool = True) -> dict:
+    """Bring workspaces that predate the marker under the policy.
+
+    An unmarked workspace is protected forever, which is correct and means the
+    854 that already existed when the policy was written would never be
+    reclaimed. This marks them from what can be read off disk -- the directory
+    name and its mtime -- and records ``inferred: true`` so nobody later mistakes
+    a reconstruction for a record.
+
+    Deliberately separate from ``retain`` and deliberately dry-run by default:
+    adopting is what makes deletion possible, so it is an operator's decision
+    and not a side effect of running a cleanup.
+    """
+    base = Path(base)
+    adopted, skipped = [], []
+    for entry in sorted(base.glob(prefix + "*")):
+        if not entry.is_dir():
+            continue
+        if (entry / MARKER_FILE).exists():
+            skipped.append(str(entry))
+            continue
+        ticket = entry.name[len(prefix):].rsplit("_", 1)[0] or entry.name
+        if not dry_run:
+            try:
+                stamp = entry.stat().st_mtime
+            except OSError:
+                continue
+            try:
+                (entry / MARKER_FILE).write_text(json.dumps({
+                    "schema": SCHEMA, "ticket": ticket, "outcome": "UNKNOWN",
+                    "preserved_at": stamp, "pinned": False, "inferred": True,
+                }, indent=1) + "\n", encoding="utf-8")
+            except OSError:
+                continue
+        adopted.append(str(entry))
+    return {"adopted": len(adopted), "already_marked": len(skipped),
+            "dry_run": dry_run, "sample": adopted[:5]}

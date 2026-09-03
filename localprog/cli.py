@@ -11,11 +11,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
 from . import deps, evidence, route, screen, step1, telemetry_bridge, work
 from .errors import HarnessInvalid
+from . import runstate
 from .provider import CodexProvider, OllamaProvider
 
 
@@ -324,11 +326,68 @@ def _write_work_report(out: Path, records, routed_all=()) -> None:
     (out / "WORK_REPORT.md").write_text(NL.join(lines) + NL, encoding="utf-8")
 
 
+def _cmd_retain(args) -> int:
+    """Report on preserved workspaces, and prune them only when asked twice.
+
+    Dry run by default: --apply is required before anything is written or
+    deleted, because the thing being deleted is evidence.
+    """
+    base = Path(args.base)
+    if args.adopt:
+        report = runstate.adopt(base, dry_run=not args.apply)
+        verb = "would be marked" if report["dry_run"] else "marked"
+        print(f"adopt: {report['adopted']} workspaces {verb}")
+        print(f"  already marked: {report['already_marked']}")
+        for path in report["sample"]:
+            print(f"  e.g. {path}")
+        if report["dry_run"]:
+            print("  (dry run: pass --apply to write the markers)")
+        return 0
+
+    report = runstate.retain(
+        base,
+        max_age_days=args.max_age_days,
+        max_total_bytes=int(args.max_total_mb * 1e6) if args.max_total_mb else None,
+        repo=Path(args.repo) if args.repo else None,
+        dry_run=not args.apply,
+    )
+    print(f"scanned {report['scanned']} preserved workspaces, "
+          f"{report['total_bytes'] / 1e6:.1f} MB")
+    print(f"  protected (pinned or unmarked): {report['protected']}")
+    print(f"  selected by policy: {len(report['selected'])} "
+          f"({report['selected_bytes'] / 1e6:.1f} MB)")
+    for entry in report["selected"][:10]:
+        print(f"    {entry['path']}  {entry['bytes'] / 1e6:.1f} MB  {entry['reason']}")
+    if report["dry_run"]:
+        print("  (dry run: nothing was deleted. Pass --apply to act.)")
+    else:
+        print(f"  removed: {len(report['removed'])}, failed: {len(report['failed'])}")
+        print(f"  log: {report['log']}")
+        if report["worktrees_pruned"] is not None:
+            print(f"  git worktree prune: {report['worktrees_pruned']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="localprog")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("selfcheck", help="Print dependency provenance and the tool list")
+
+    p = sub.add_parser("retain", help="Report on, and optionally prune, preserved "
+                                      "workspaces. Dry run unless --apply.")
+    p.add_argument("--base", default=tempfile.gettempdir(),
+                   help="where preserved workspaces live (default: the temp dir)")
+    p.add_argument("--max-age-days", type=float, default=None)
+    p.add_argument("--max-total-mb", type=float, default=None)
+    p.add_argument("--repo", default=None,
+                   help="also prune git worktree registrations whose directories are gone")
+    p.add_argument("--adopt", action="store_true",
+                   help="mark workspaces that predate the marker so the policy can "
+                        "see them. Separate on purpose: adopting is what makes "
+                        "deletion possible.")
+    p.add_argument("--apply", action="store_true",
+                   help="actually do it. Without this nothing is written or deleted.")
 
     p = sub.add_parser("screen", help="Paso 0 (contract §D)")
     p.add_argument("--out", required=True)
@@ -385,7 +444,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return {"selfcheck": cmd_selfcheck, "screen": cmd_screen,
-                "step1": cmd_step1, "work": cmd_work}[args.command](args)
+                "step1": cmd_step1, "work": cmd_work,
+            "retain": _cmd_retain}[args.command](args)
     except HarnessInvalid as exc:
         print(f"HARNESS_INVALID: {exc.detail}", file=sys.stderr)
         return 3
