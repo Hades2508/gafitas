@@ -104,7 +104,10 @@ LANGUAGES: dict[str, LanguageCapabilities] = {
         verification_status=SUPPORTED,
         evidence=("RepoQA agent 19.00% -> 43/46% (p=0.00027)",
                   "ticket battery 10/11, zero paid",
-                  "self-maintenance: dogfood07, dogfood09 promoted"),
+                  "self-maintenance: dogfood07, dogfood09 promoted",
+                  "candidate recall@15, no model in the loop: 74.0% over the whole repo, "
+                  "89.0% scoped to the file the mission names (F-79)",
+                  ),
     ),
     "typescript": LanguageCapabilities(
         name="typescript", extensions=(".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"),
@@ -115,7 +118,10 @@ LANGUAGES: dict[str, LanguageCapabilities] = {
         evidence=("RepoQA agent 17.00% -> 51.00% (p=1.4e-07), holdout frozen first",
                   "no symbol index: 202 calls lost to ERROR_LANGUAGE_UNSUPPORTED "
                   "and it still tripled. This is the proof that AST tooling is an "
-                  "amplifier and not a prerequisite."),
+                  "amplifier and not a prerequisite.",
+                  "candidate recall@15, no model in the loop: 80.0% over the whole repo, "
+                  "98.0% scoped to the file the mission names (F-79)",
+                  ),
     ),
     "java": LanguageCapabilities(
         name="java", extensions=(".java",),
@@ -125,7 +131,10 @@ LANGUAGES: dict[str, LanguageCapabilities] = {
         verification_status=NOT_MEASURED,
         evidence=("RepoQA agent 14.00% -> 36.00% (p=0.00068), holdout frozen first",
                   "F-69 found here: 75 of 219 searches died on Maven-shaped paths "
-                  "that do not exist in these checkouts"),
+                  "that do not exist in these checkouts",
+                  "candidate recall@15, no model in the loop: 54.0% over the whole repo, "
+                  "83.0% scoped to the file the mission names (F-79)",
+                  ),
     ),
     "rust": LanguageCapabilities(
         name="rust", extensions=(".rs",),
@@ -134,7 +143,10 @@ LANGUAGES: dict[str, LanguageCapabilities] = {
         editing_status=NOT_MEASURED,
         verification_status=NOT_MEASURED,
         evidence=("RepoQA agent 11.00% -> 32.00% (p=0.00019), holdout frozen "
-                  "before the fix it validates",),
+                  "before the fix it validates",
+                  "candidate recall@15, no model in the loop: 64.0% over the whole repo, "
+                  "86.0% scoped to the file the mission names (F-79)",
+                  ),
     ),
     "cpp": LanguageCapabilities(
         name="cpp", extensions=(".cpp", ".cc", ".cxx", ".hpp", ".hh", ".h", ".c"),
@@ -144,7 +156,10 @@ LANGUAGES: dict[str, LanguageCapabilities] = {
         verification_status=NOT_MEASURED,
         evidence=("RepoQA agent 22.00% post-retrieval; control measured "
                   "separately. The weakest language for the reference engine "
-                  "natively too (MODEL_NATIVE 71.00 against python's 85.00).",),
+                  "natively too (MODEL_NATIVE 71.00 against python's 85.00).",
+                  "candidate recall@15, no model in the loop: 58.0% over the whole repo, "
+                  "81.0% scoped to the file the mission names (F-79)",
+                  ),
     ),
     # Carved by the index and never measured. Rows exist so the table and the
     # declaration patterns cannot drift apart -- a test asserts exactly that,
