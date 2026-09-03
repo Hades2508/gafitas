@@ -123,3 +123,60 @@ def test_the_reference_engine_is_certified_in_the_shipped_registry():
     assert reference.served_context == 32768
     assert reference.max_output_tokens == 4096
     assert reference.source.startswith("probed")
+
+
+# ------------------------------------------------- payload limits (the granite lesson)
+
+def test_supports_native_tools_is_necessary_and_not_sufficient():
+    """granite4.1:3b declares native tool support, and it is true. It emits a
+    flawless call below ~800 characters and, above that, Ollama's parser for its
+    template returns content empty AND tool_calls empty -- the generation is
+    gone before the harness sees it. Fifty runs were scored against the engine
+    for that. The protocol now asks how much it can carry, not whether it can."""
+    granite_shaped = caps(supports_native_tools=True, native_payload_limit=800,
+                          supports_text_tool_protocol=True)
+    assert granite_shaped.protocol == "J"
+
+
+def test_an_engine_that_carries_a_real_payload_natively_stays_native():
+    assert caps(supports_native_tools=True, native_payload_limit=3200,
+                supports_text_tool_protocol=True).protocol == "A"
+
+
+def test_an_unmeasured_payload_limit_changes_nothing():
+    """Every engine certified before this existed keeps the protocol it was
+    certified with, so their numbers stay comparable."""
+    assert caps(supports_native_tools=True).protocol == "A"
+    assert caps(supports_native_tools=True).native_payload_limit is engine.UNKNOWN
+
+
+def test_a_small_native_limit_with_no_text_protocol_stays_native():
+    """There is nowhere better to send it. Refusing to drive an engine at all
+    because its native channel is narrow would be worse than a narrow channel."""
+    assert caps(supports_native_tools=True, native_payload_limit=200,
+                supports_text_tool_protocol=False).protocol == "A"
+
+
+def test_the_floor_is_a_threshold_not_a_per_engine_rule():
+    """It is compared against a number every engine is measured for, which is
+    what keeps this an engine adapter and not a branch on a model name."""
+    assert isinstance(engine.PAYLOAD_FLOOR, int)
+    assert engine.PAYLOAD_FLOOR > 0
+
+
+def test_payload_limits_round_trip_through_the_registry(tmp_path):
+    original = caps(name="m", supports_native_tools=True, native_payload_limit=800,
+                    text_payload_limit=3200, supports_text_tool_protocol=True)
+    path = tmp_path / "ENGINES.json"
+    engine.save_registry({"m": original}, path)
+    assert engine.load_registry(path)["m"] == original
+
+
+def test_the_shipped_registry_records_what_was_measured():
+    known = engine.load_registry()
+    for name in ("granite4.1:3b", "qwen2.5-coder:3b"):
+        rec = known.get(name)
+        assert rec is not None, f"{name} must stay in the registry"
+        assert isinstance(rec.text_payload_limit, int)
+    reference = known["qwen3:4b-instruct-2507-q4_K_M"]
+    assert reference.protocol == "A", "the reference engine must not move protocol"
