@@ -34,7 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import deps, engine, evidence, loop, protocol as protocol_mod, telemetry_bridge, tools, verify, workspace
+from . import (deps, engine, evidence, loop, orient, protocol as protocol_mod,
+               telemetry_bridge, tools, verify, workspace)
 from .errors import HarnessInvalid
 from .provider import (  # noqa: F401  (WORK_* re-exported for the CLI)
     WORK_NUM_CTX,
@@ -76,8 +77,9 @@ argumento las tienes en su definicion; leelas.
 
 COMO TRABAJAR
 
-1. ORIENTATE. Si no conoces el repositorio, empieza por list_dir. No adivines
-   nombres de ficheros.
+1. ORIENTATE. Tienes la estructura del repositorio en el objetivo: usala en
+   vez de recorrer directorios. list_dir es para mirar un directorio
+   concreto que no aparezca ahi. No adivines nombres de ficheros.
    Si NO SABES donde esta lo que buscas ni como se llama, usa search_code y
    pegale el texto del objetivo tal cual: busca por significado y te devuelve
    los sitios que mas se le parecen. grep es para cuando ya sabes el literal
@@ -331,13 +333,29 @@ def system_prompt(ticket: Ticket, protocol: str = "A") -> str:
     return text
 
 
-def objective_text(ticket: Ticket) -> str:
-    return (
-        f"{ticket.objective}\n\n"
-        f"Puedes escribir en: {', '.join(ticket.scope.to_list())}\n"
-        f"Tests de aceptacion: {', '.join(ticket.acceptance_tests)}\n"
-        f"(un ambito que acaba en '/' incluye todo lo que hay debajo)"
-    )
+def objective_text(ticket: Ticket, root: Path | None = None) -> str:
+    """The mission, plus the repository's shape.
+
+    The map is handed over rather than left to the agent because walking a
+    directory needs no reasoning and cost three inferences. Measured over fifty
+    matched runs of the reference engine: list_dir was called 140 times -- on
+    turn one in 49 of 50 runs and still on turn three in 24 of them, on missions
+    that NAME the file -- and the first write did not land until turn 7.
+
+    ``root`` is optional so a caller with no repository on disk gets the
+    objective exactly as it was before.
+    """
+    parts = [ticket.objective, ""]
+    if root is not None:
+        picture = orient.repo_map(Path(root))
+        if picture:
+            parts += [picture, ""]
+    parts += [
+        f"Puedes escribir en: {', '.join(ticket.scope.to_list())}",
+        f"Tests de aceptacion: {', '.join(ticket.acceptance_tests)}",
+        "(un ambito que acaba en '/' incluye todo lo que hay debajo)",
+    ]
+    return "\n".join(parts)
 
 
 # --------------------------------------------------------------------- run
@@ -454,7 +472,8 @@ def run_ticket(
 
         outcome = loop.run_loop(
             provider=provider, ctx=ctx,
-            system=system_prompt(ticket, protocol), objective=objective_text(ticket),
+            system=system_prompt(ticket, protocol),
+            objective=objective_text(ticket, ctx.root),
             protocol_name=protocol, max_turns=ticket.max_turns,
             keep_turns=WORK_KEEP_TURNS, elide_over_chars=WORK_ELIDE_OVER_CHARS,
             budget_chars=budget_chars(
@@ -464,7 +483,8 @@ def run_ticket(
                     tools.legal_tools(tuple(ticket.write_scope),
                                       tuple(ticket.allowed_new_files)))))
                 if protocol == "A" else 0,
-                system_chars=len(system_prompt(ticket, protocol)),
+                system_chars=len(system_prompt(ticket, protocol))
+                + len(objective_text(ticket, ctx.root)),
             ),
         )
 
