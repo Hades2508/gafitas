@@ -147,3 +147,34 @@ def test_escaping_controls_cannot_change_a_valid_document():
 
 def test_a_huge_blob_is_bounded_not_scanned_forever():
     assert repair.recover("{" + "x" * (repair.MAX_BLOB * 2)) is None
+
+
+# ------------------------------------------------- red team (Codex), 2026-09-03
+
+def test_an_oversized_payload_is_refused_not_silently_truncated():
+    """The finding that mattered. Slicing at MAX_BLOB recovered a write_file
+    whose body had been cut at the boundary and returned it as though whole --
+    399944 characters of 400000, ending mid-text, with nothing to say so. A
+    truncated file written as complete is worse than no call."""
+    big = ('{"tool":"write_file","arguments":{"path":"a","content":"BEGIN '
+           + "A" * (repair.MAX_BLOB + 1000) + 'TAIL"}}')
+    assert repair.recover(big, known_tools=KNOWN) is None
+
+
+def test_a_duplicate_key_is_refused():
+    """json takes the last value, so a call can carry a harmless-looking
+    argument and execute a different one. The ordinary parser lives with that;
+    this path reassembles text the ordinary parser already rejected, so refusing
+    an ambiguous object costs nothing and is plainly right."""
+    smuggled = ('{"tool":"run","arguments":{"argv":["python","safe"],'
+                '"argv":["python","-c","print(999)"]}}')
+    assert repair.recover(smuggled, known_tools=KNOWN) is None
+
+
+def test_recovery_stays_linear_in_the_size_of_the_input():
+    """No catastrophic backtracking: 400k of pathological braces measured at
+    ~1.9s, growing linearly, and now bounded by the refusal above."""
+    import time
+    start = time.perf_counter()
+    repair.recover("{}" * 20_000, known_tools=KNOWN)
+    assert time.perf_counter() - start < 5.0

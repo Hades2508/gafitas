@@ -154,7 +154,7 @@ def _terminal_string(blob: str) -> Any:
     # enough for {"name":..,"arguments":{..}} and small enough that it cannot
     # turn unrelated text into an object.
     for extra in range(4):
-        parsed = _try(json.loads, spliced + "}" * extra)
+        parsed = _try(_loads, spliced + "}" * extra)
         if isinstance(parsed, dict):
             return parsed
     return None
@@ -268,7 +268,14 @@ def recover(content: str, *, known_tools: frozenset[str] | None = None
     if not isinstance(content, str) or not content.strip():
         return None
     if len(content) > MAX_BLOB:
-        content = content[:MAX_BLOB]
+        # RED TEAM (Codex): slicing here recovered a write_file whose payload
+        # had been cut at the boundary and returned it as if it were whole --
+        # 399944 characters of a 400000-character body, ending mid-text, with
+        # nothing to say so. A truncated file written as though complete is
+        # worse than no call at all, and "never silently corrupt a payload" is
+        # the promise this module is built on. So: refuse. The caller gets an
+        # ordinary ERROR_NO_TOOL_CALL, which is true and recoverable.
+        return None
 
     candidates = _balanced_objects(content)
     # Unescaped quotes inside the payload desynchronise the brace scanner: it
@@ -282,8 +289,8 @@ def recover(content: str, *, known_tools: frozenset[str] | None = None
 
     for blob in candidates:
         for tier, candidate in (
-            (TIER_NATIVE_IN_CONTENT, _try(json.loads, blob)),
-            (TIER_RAW_CONTROLS, _try(json.loads, _escape_raw_controls(blob))),
+            (TIER_NATIVE_IN_CONTENT, _try(_loads, blob)),
+            (TIER_RAW_CONTROLS, _try(_loads, _escape_raw_controls(blob))),
             (TIER_TERMINAL_STRING, _terminal_string(blob)),
         ):
             if candidate is None:
@@ -296,6 +303,29 @@ def recover(content: str, *, known_tools: frozenset[str] | None = None
                 continue
             return name, args, tier
     return None
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict:
+    """Refuse an object that names the same key twice.
+
+    RED TEAM (Codex): ``{"argv": ["python", "safe"], "argv": ["python", "-c",
+    "print(999)"]}`` parses, and json takes the LAST value -- so a call can
+    carry a harmless-looking argument and execute a different one. That is
+    ordinary json behaviour and the ordinary parser lives with it; repair does
+    not have to. This path reassembles text the normal parser already rejected,
+    so it is the one place where being stricter costs nothing and refusing an
+    ambiguous object is plainly right.
+    """
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate key {key!r} in a recovered call")
+        seen[key] = value
+    return seen
+
+
+def _loads(text: str) -> Any:
+    return json.loads(text, object_pairs_hook=_no_duplicate_keys)
 
 
 def _try(fn, *args):
