@@ -142,6 +142,13 @@ class ToolContext:
     allowed_new_files: tuple[str, ...] = ()
     acceptance_tests: tuple[str, ...] = ()
     changed_files: set[str] = field(default_factory=set)
+    #: How many times each path has been written, and whether anything was
+    #: learned since the last one. Two of the reference engine's first eleven
+    #: post-F-75 runs wrote their answer six and nine times, at 17 and 20 turns;
+    #: what separates that from ordinary self-correction is not the count but
+    #: whether a read, a search or a run happened in between.
+    write_counts: dict = field(default_factory=dict)
+    learned_since_write: bool = True
     #: Paths THIS RUN brought into existence. Separate from changed_files
     #: because the permission it carries is different: a file the agent created
     #: may be rewritten, and a file that was already in the repository may not
@@ -489,6 +496,36 @@ def _check_writable(ctx: ToolContext, rel: str, *, creating: bool) -> None:
 
 
 # ---------------------------------------------------------------- the 7 tools
+
+
+#: Tools that bring something back the agent did not already have. Writing is
+#: not here, and neither is finish: repeating a write after one of THOSE is the
+#: pattern this watches for.
+INFORMATION_TOOLS = frozenset({
+    "read_file", "read_symbol", "list_symbols", "list_dir",
+    "grep", "search_code", "run", "run_tests",
+})
+
+
+def _rewrite_note(ctx: ToolContext, rel: str) -> str:
+    """Note a rewrite that had nothing new behind it.
+
+    A note and never a refusal. F-63 is the standing lesson: a refusal that
+    blocks a correct answer costs more than the mistake it prevents, and the
+    second write is very often the right one.
+    """
+    count = ctx.write_counts.get(rel, 0) + 1
+    ctx.write_counts[rel] = count
+    learned = ctx.learned_since_write
+    ctx.learned_since_write = False
+    if count < 3 or learned:
+        return ""
+    return (f"{NEWLINE}[Has escrito {rel} {count} veces, y desde la anterior no "
+            f"has leido, buscado ni ejecutado nada: es la misma pregunta con "
+            f"otra respuesta, no informacion nueva. Si no estas seguro de cual "
+            f"es el codigo correcto, MIRALO (read_symbol, search_code) en vez de "
+            f"volver a escribirlo; si ya lo tienes en el repositorio, copy_code "
+            f"lo pone tal cual.]")
 
 
 def _range_note(rel: str, text: str, lo: int, hi: int) -> str:
@@ -1359,7 +1396,8 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
     ctx.changed_files.add(rel)
     ctx.created_files.add(rel)
     return (f"write_file aplicada en {rel}" + escape_note
-            + _unreachable_note(rel, None, content))
+            + _unreachable_note(rel, None, content)
+            + _rewrite_note(ctx, rel))
 
 
 def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
@@ -2150,6 +2188,10 @@ def dispatch(ctx: ToolContext, name: Any, raw_args: Any) -> ToolOutcome:
         unknown = [k for k in args if k not in required + optional]
         call = {k: v for k, v in args.items() if k in required + optional}
         value = _IMPL[name](ctx, **call)
+        if name in INFORMATION_TOOLS:
+            # Something came back that the agent did not already have, so the
+            # next write is acting on it rather than re-guessing.
+            ctx.learned_since_write = True
         if unknown:
             # Extra keys are tolerated but reported; refusing here would fail
             # a call that is otherwise perfectly good.
