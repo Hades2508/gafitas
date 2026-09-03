@@ -819,6 +819,26 @@
    "impact": "I reported '72 vs 66' as the standing 4B result when the most recent run was 74/76, and reported '521 passed' when five tests were red.",
    "cause": "Quoting an earlier run and an earlier tally instead of re-reading them.",
    "fix": "The 4B's matched result varies 62-76 against a stable 72-74 baseline, so no single run demonstrates amplification and it is reported as PRESERVED with the spread stated. dogfood08's suite is xfail with its FAIL recorded."
+  },
+  {
+   "id": "F-77",
+   "priority": "P1",
+   "component": "efficiency / prompt",
+   "status": "FIXED_NOT_YET_MEASURED",
+   "evidence": "Fifty matched runs of the reference engine, 426 tool calls: list_dir 140 -- turn 1 in 49 of 50 runs, turn 2 in 38, turn 3 in 24 -- on missions that NAME the file, with the first write at median turn 7.",
+   "impact": "A quarter of every run spent establishing what the harness already knew. list_dir was the most-used tool in the whole corpus.",
+   "cause": "The working instructions opened with 'ORIENTATE. Si no conoces el repositorio, empieza por list_dir' and the agent did as it was told.",
+   "fix": "localprog/orient.py: a bounded deterministic repo map in the objective. Takes no objective and no query, so it cannot become a retrieval channel; says when it truncated, because an agent that thinks it has seen everything stops looking; skips what the index skips. The turn and token counts are the claim and the next matched run is the test."
+  },
+  {
+   "id": "F-78",
+   "priority": "P1",
+   "component": "tools",
+   "status": "ADDED_NOT_YET_MEASURED",
+   "evidence": "granite4.1:3b with legal_tools: 48.89% MODEL_ONLY vs 4.44% GAFITAS, 45/45 CANDIDATE -- it looks, it writes, it no longer quits, and the content is wrong. 14 of its 35 written answers are longer than its measured 1600-character text payload limit. read_symbol's docstring records the same cost for the reference engine: 72% byte-exact as plain text against 30% read-through-tools-and-written-back.",
+   "impact": "Every write in this harness makes the engine retype text the harness already has on disk. For a small engine that is disqualifying rather than wasteful: there are answers it knows and cannot emit.",
+   "cause": "No tool moved bytes. All of them moved them THROUGH the model.",
+   "fix": "copy_code(src, into, name=|start=/end=). Returns source, range, byte count and sha256 instead of the body, so a reviewer can check the bytes came off disk and the transcript does not get back the weight the tool exists to keep out. The matched task IS copy-a-function, so any matched gain is upper-bounded by the task's shape; dogfood08 -- extract-to-module, failed 3/3, byte-identity in its frozen acceptance -- is the general test."
   }
  ],
  "safety_record": {
