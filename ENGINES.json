@@ -1,0 +1,79 @@
+{
+ "schema": "GAFITAS_ENGINE_CAPABILITIES_V1",
+ "engines": {
+  "granite4.1:3b": {
+   "name": "granite4.1:3b",
+   "context_window": 131072,
+   "served_context": 32768,
+   "max_output_tokens": null,
+   "supports_native_tools": true,
+   "supports_text_tool_protocol": true,
+   "structured_output": null,
+   "streaming": null,
+   "usage_reporting": true,
+   "known_protocol_constraints": [],
+   "source": "probed",
+   "probed_at": 1788459210.3624182,
+   "parameter_size": "3.4B",
+   "quantization": "Q4_K_M",
+   "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
+  },
+  "phi4-mini:3.8b": {
+   "name": "phi4-mini:3.8b",
+   "context_window": 131072,
+   "served_context": 32768,
+   "max_output_tokens": null,
+   "supports_native_tools": false,
+   "supports_text_tool_protocol": true,
+   "structured_output": null,
+   "streaming": null,
+   "usage_reporting": true,
+   "known_protocol_constraints": [
+    "handed a tool schema it answered in prose: native tool calls not observed"
+   ],
+   "source": "probed",
+   "probed_at": 1788459177.6700056,
+   "parameter_size": "3.8B",
+   "quantization": "Q4_K_M",
+   "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
+  },
+  "qwen2.5-coder:3b": {
+   "name": "qwen2.5-coder:3b",
+   "context_window": 32768,
+   "served_context": 32768,
+   "max_output_tokens": null,
+   "supports_native_tools": false,
+   "supports_text_tool_protocol": true,
+   "structured_output": null,
+   "streaming": null,
+   "usage_reporting": true,
+   "known_protocol_constraints": [
+    "handed a tool schema it answered in prose: native tool calls not observed"
+   ],
+   "source": "probed",
+   "probed_at": 1788459243.3657646,
+   "parameter_size": "3.1B",
+   "quantization": "Q4_K_M",
+   "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
+  },
+  "qwen3:4b-instruct-2507-q4_K_M": {
+   "name": "qwen3:4b-instruct-2507-q4_K_M",
+   "context_window": 262144,
+   "served_context": 32768,
+   "max_output_tokens": 4096,
+   "supports_native_tools": true,
+   "supports_text_tool_protocol": true,
+   "structured_output": null,
+   "streaming": null,
+   "usage_reporting": true,
+   "known_protocol_constraints": [
+    "served_context and max_output_tokens are the campaign settings this engine was measured with"
+   ],
+   "source": "probed+declared",
+   "probed_at": 1788459114.6094637,
+   "parameter_size": "4.0B",
+   "quantization": "Q4_K_M",
+   "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
+  }
+ }
+}

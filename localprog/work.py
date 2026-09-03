@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import deps, evidence, loop, protocol as protocol_mod, telemetry_bridge, tools, verify, workspace
+from . import deps, engine, evidence, loop, protocol as protocol_mod, telemetry_bridge, tools, verify, workspace
 from .errors import HarnessInvalid
 from .provider import (  # noqa: F401  (WORK_* re-exported for the CLI)
     WORK_NUM_CTX,
@@ -201,6 +201,10 @@ class WorkResult:
     model: str
     model_class: str = "LOCAL"
     protocol: str = "A"
+    #: The EngineCapabilities this run was planned against (context, output
+    #: budget, protocol). Sealed so a comparison between engines can be checked
+    #: rather than trusted.
+    engine: dict = field(default_factory=dict)
     outcome: str = ""
     loop_outcome: str = ""
     scoreable: bool = False
@@ -239,6 +243,7 @@ class WorkResult:
             "ticket_id": self.ticket_id, "model": self.model,
             "model_class": self.model_class,
             "protocol": self.protocol,
+            "engine": dict(self.engine),
             "outcome": self.outcome, "loop_outcome": self.loop_outcome,
             "scoreable": self.scoreable,
             "discrimination": self.discrimination,
@@ -336,13 +341,40 @@ def run_ticket(
     out_dir: Path | None = None,
     telemetry: Any | None = None,
     base_dir: Path | None = None,
-    num_ctx: int = WORK_NUM_CTX,
-    protocol: str = "A",
+    num_ctx: int | None = None,
+    protocol: str | None = None,
+    capabilities: Any | None = None,
 ) -> WorkResult:
-    """Do the ticket. One model, one workspace, one verdict."""
+    """Do the ticket. One model, one workspace, one verdict.
+
+    ``num_ctx`` and ``protocol`` come FROM THE ENGINE unless a caller overrides
+    them. Before this they were module constants -- 32768 and native tool calls
+    -- which are the reference engine's properties wearing the costume of
+    universal truth. Point the harness at a model with an 8k window and it did
+    not adapt, it overflowed, and the overflow was recorded as a PROVIDER_ERROR:
+    the harness reporting its own misconfiguration as the engine's fault. That
+    makes engine comparison impossible, which is precisely what we want to do.
+
+    An unregistered engine still runs. It gets a conservative context and no
+    assumptions, which is the honest treatment of a model nobody has certified.
+    """
+    caps = capabilities or engine.capabilities_for(model)
+    if num_ctx is None:
+        num_ctx = caps.working_context()
+    if protocol is None:
+        try:
+            protocol = caps.protocol
+        except ValueError:
+            # Nobody established how to drive it. Native first is the same
+            # choice the code made before, but now it is a recorded fallback
+            # rather than an invisible assumption.
+            protocol = "A"
+    num_predict = caps.working_output()
+
     result = WorkResult(ticket_id=ticket.ticket_id, model=model, protocol=protocol)
+    result.engine = caps.to_dict()
     factory = provider_factory or (
-        lambda name: OllamaProvider(name, num_ctx=num_ctx, num_predict=WORK_NUM_PREDICT)
+        lambda name: OllamaProvider(name, num_ctx=num_ctx, num_predict=num_predict)
     )
     telemetry = telemetry or telemetry_bridge.NullTelemetry("no telemetry supplied")
     started = time.perf_counter()
