@@ -56,69 +56,17 @@ def call(ctx, name, **kwargs):
     return tools.dispatch(ctx, name, kwargs)
 
 
-# ------------------------------------------------------------- F-66 copy_region
-
-def test_a_region_arrives_byte_for_byte(ctx, repo):
-    out = call(ctx, "copy_region", source="src.py", start=4, end=6, dest="out.py")
-    assert out.ok, out.feedback
-    written = (repo / "out.py").read_text(encoding="utf-8")
-    assert written == "\n".join(SRC.splitlines()[3:6]) + "\n"
-    assert '"""Add one, and keep the quotes intact."""' in written, (
-        "the quotes are the thing that kept coming back doubled"
-    )
-
-
-def test_copying_marks_the_destination_changed(ctx):
-    call(ctx, "copy_region", source="src.py", start=4, end=6, dest="out.py")
-    assert ctx.changed_files == {"out.py"}
-
-
-def test_it_refuses_to_overwrite_and_says_what_to_do_instead(ctx, repo):
-    (repo / "out.py").write_text("already here\n", encoding="utf-8")
-    out = call(ctx, "copy_region", source="src.py", start=4, end=6, dest="out.py")
-    assert not out.ok and out.code == "ERROR_FILE_EXISTS"
-    assert "at=" in out.feedback
-    assert (repo / "out.py").read_text(encoding="utf-8") == "already here\n"
-
-
-def test_at_inserts_into_a_file_that_already_exists(ctx, repo):
-    (repo / "dest.py").write_text("# header\n# footer\n", encoding="utf-8")
-    out = call(ctx, "copy_region", source="src.py", start=9, end=10,
-               dest="dest.py", at=2)
-    assert out.ok, out.feedback
-    assert (repo / "dest.py").read_text(encoding="utf-8") == (
-        "# header\ndef other():\n    pass\n# footer\n"
-    )
-
-
-def test_the_write_scope_still_holds(repo):
-    ctx = tools.ToolContext(root=repo, write_scope=("allowed/**",))
-    out = tools.dispatch(ctx, "copy_region", {"source": "src.py", "start": 4,
-                                              "end": 6, "dest": "elsewhere.py"})
-    assert not out.ok and out.code == "ERROR_NOT_IN_WRITE_SCOPE"
-
-
-def test_a_range_off_the_end_of_the_file_is_refused(ctx):
-    out = call(ctx, "copy_region", source="src.py", start=900, end=910, dest="out.py")
-    assert not out.ok and out.code == "ERROR_BAD_RANGE"
-
-
-def test_a_python_destination_that_would_not_parse_is_refused(ctx, repo):
-    """Moving a method to module level needs a dedent, and the tool says so
-    rather than leaving a file nobody can import."""
-    (repo / "cls.py").write_text(
-        "class A:\n    def m(self):\n        return 1\n", encoding="utf-8")
-    out = call(ctx, "copy_region", source="cls.py", start=2, end=3, dest="out.py")
-    assert not out.ok and out.code == "ERROR_SYNTAX_AFTER_EDIT"
-    assert "indentacion" in out.feedback
-    assert not (repo / "out.py").exists()
-
-
-def test_a_non_python_destination_takes_anything(ctx, repo):
-    """The answer of a search does not have to be importable."""
-    out = call(ctx, "copy_region", source="src.py", start=5, end=5, dest="answer.txt")
-    assert out.ok, out.feedback
-    assert (repo / "answer.txt").read_text(encoding="utf-8").strip().startswith('"""')
+# F-66 copy_region was REVERTED. Its tests went with it, and the reason is
+# recorded here rather than deleted along with the code: the diagnosis behind
+# it was correct and measured -- retyping code through a JSON tool argument
+# loses text -- and the tool built from that diagnosis was called ZERO times
+# in 150 RepoQA cases, 50 matched cases, a 100-case holdout, and the
+# extract-to-module refactor written specifically for it. Naming it in the
+# system prompt, which is what made search_code get used, changed nothing.
+#
+# A thirteenth tool in every schema and four more lines in every prompt, for
+# a capability the model never reaches for, is a cost with no measured
+# benefit. Keeping it because the reasoning was sound would be the mistake.
 
 
 # --------------------------------------------------------- F-67 the give-up

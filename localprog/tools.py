@@ -1562,110 +1562,6 @@ def run_tests(ctx: ToolContext, node_ids: Any = None) -> dict:
     return result
 
 
-def copy_region(ctx: ToolContext, source: Any, start: Any, end: Any,
-                dest: Any, at: Any = None) -> str:
-    """Copy lines *start*..*end* of *source* into *dest*, byte for byte (F-66).
-
-    The one thing the tool surface could not do: put code somewhere else without
-    the model retyping it. Extracting a helper into its own module, moving a
-    handler between files, lifting a block into a new test -- all of them went
-    through read, then write_file, with the whole body passing through the model
-    and out again as a JSON string argument.
-
-    That round trip loses text, measurably. On the matched evaluation, where the
-    same model met the same file both ways, it reproduced a function byte for
-    byte 72% of the time when it answered in prose and 40% when it read the file
-    with tools and wrote it back. The losses are not paraphrase: bodies flattened
-    into escaped one-liners, docstrings whose quotes came back doubled, a copy
-    that stopped at line 17 of 37, a copy that ran seven lines past the end of
-    the function and into the next one, and a line where the source said
-    ``gevent.ssl.create_default_context()`` and the answer said
-    ``ssl.SSLContext(ssl.PROTOCOL_TLS)``.
-
-    None of that is the model failing to understand the code. It is a copy
-    performed by a language model because the harness had no way to perform it.
-
-    ``at`` chooses between the two shapes a move actually takes: omitted, *dest*
-    must not exist and is created; given a line number, the text is inserted
-    before that line of an existing *dest*. Deleting the original is a separate
-    call, on purpose -- a tool that moves code should not also be able to lose
-    it.
-    """
-    src_rel, src_target = _resolve(ctx, source, must_exist=True)
-    text = _read_text(src_rel, src_target)
-    lines = text.splitlines()
-    total = len(lines)
-
-    for name, value in (("start", start), ("end", end)):
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise InvalidCall(ERROR_BAD_ARGUMENTS,
-                              f"{name} debe ser un entero (linea, empezando en 1)")
-    if start < 1 or end < start:
-        raise ToolError(ERROR_BAD_RANGE,
-                        f"rango {start}-{end} invalido: start >= 1 y end >= start.")
-    if start > total:
-        raise ToolError(ERROR_BAD_RANGE,
-                        f"{src_rel!r} tiene {total} lineas; la {start} no existe.")
-    stop = min(end, total)
-    body = NEWLINE.join(lines[start - 1:stop])
-    if len(body) > MAX_TOOL_PAYLOAD_CHARS * 4:
-        raise ToolError(
-            ERROR_BAD_RANGE,
-            f"el rango {start}-{stop} son {len(body)} caracteres. Copia menos de "
-            f"una vez, o parte el trabajo.",
-        )
-
-    dest_rel, dest_target = _resolve(ctx, dest)
-    creating = at is None
-    _check_writable(ctx, dest_rel, creating=creating)
-
-    if creating:
-        if dest_target.exists():
-            raise ToolError(
-                ERROR_FILE_EXISTS,
-                f"{dest_rel!r} ya existe. Para insertar dentro de un fichero que "
-                f"ya esta, pasa at=<linea>.",
-            )
-        result = body + NEWLINE
-        where = f"creando {dest_rel!r}"
-    else:
-        if not isinstance(at, int) or isinstance(at, bool) or at < 1:
-            raise InvalidCall(ERROR_BAD_ARGUMENTS,
-                              "at debe ser un entero >= 1, o null para crear el fichero")
-        dest_text = _read_text(dest_rel, dest_target)
-        dest_lines = dest_text.splitlines()
-        if at > len(dest_lines) + 1:
-            raise ToolError(
-                ERROR_BAD_RANGE,
-                f"{dest_rel!r} tiene {len(dest_lines)} lineas; no puedo insertar "
-                f"en la {at}. Usa at<={len(dest_lines) + 1}.",
-            )
-        cut = at - 1
-        result = NEWLINE.join(dest_lines[:cut] + lines[start - 1:stop]
-                              + dest_lines[cut:]) + NEWLINE
-        where = f"insertando en {dest_rel!r} antes de la linea {at}"
-
-    if dest_rel.endswith(".py"):
-        try:
-            ast.parse(result)
-        except SyntaxError as exc:
-            raise ToolError(
-                ERROR_SYNTAX_AFTER_EDIT,
-                f"{dest_rel!r} no parseria:" + NEWLINE
-                + _syntax_report(result, exc, dest_rel)
-                + NEWLINE + "  NO se ha escrito nada. Un metodo movido a nivel de "
-                "modulo suele necesitar que le quites la indentacion.",
-            ) from None
-        except ValueError as exc:
-            raise ToolError(ERROR_SYNTAX_AFTER_EDIT,
-                            f"{dest_rel!r}: {exc}. NO se ha escrito nada.") from None
-
-    _write_text(dest_target, result)
-    ctx.changed_files.add(dest_rel)
-    return (f"copy_region: {stop - start + 1} lineas de {src_rel}:{start}-{stop} "
-            f"copiadas TAL CUAL, {where}")
-
-
 def _navigation_note(ctx: ToolContext) -> str:
     """What the agent's own session says about where it has and has not looked.
 
@@ -1876,7 +1772,6 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "read_file": (("path",), ("start", "end")),
     "list_dir": ((), ("path", "recursive")),
     "grep": (("pattern",), ("glob", "context", "ignore_case")),
-    "copy_region": (("source", "start", "end", "dest"), ("at",)),
     "search_code": (("query",), ("limit", "path")),
     "list_symbols": (("path",), ()),
     "read_symbol": (("path", "name"), ()),
@@ -1892,7 +1787,6 @@ _IMPL = {
     "read_file": read_file,
     "list_dir": list_dir,
     "grep": grep,
-    "copy_region": copy_region,
     "search_code": search_code,
     "list_symbols": list_symbols,
     "read_symbol": read_symbol,
@@ -2045,16 +1939,6 @@ TOOL_DOC: dict[str, str] = {
         "aciertes el literal exacto, esto no. Funciona en cualquier lenguaje. "
         "Despues lee el candidato que encaje con read_symbol o read_file."
     ),
-    "copy_region": (
-        "Copia un tramo de lineas de un fichero a otro TAL CUAL, byte a byte, sin "
-        "que el texto pase por ti. Es la forma de mover o extraer codigo que ya "
-        "existe -- sacar una funcion a su propio modulo, llevar un bloque a otro "
-        "fichero -- sin tener que reescribirlo y sin arriesgarte a cambiarlo por "
-        "el camino. Sin 'at' crea el fichero de destino (falla si ya existe); con "
-        "at=<linea> lo inserta en un fichero que ya existe, antes de esa linea. "
-        "Los numeros de linea te los dan search_code, read_symbol y read_file. "
-        "Borrar el original, si hace falta, es otra llamada."
-    ),
     "list_symbols": (
         "Devuelve lo que define un fichero Python -- funciones, clases y tambien "
         "las constantes y tablas de modulo -- con su numero de linea, en forma "
@@ -2126,9 +2010,6 @@ PARAM_DOC: dict[str, str] = {
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
     "context": "Lineas de contexto alrededor de cada coincidencia (0-20). 0 solo da la linea.",
     "ignore_case": "Booleano; si es True, busca sin distinguir mayusculas y minusculas. Por defecto False.",
-    "source": "Fichero del que copiar, ruta relativa al repositorio.",
-    "dest": "Fichero al que copiar, ruta relativa al repositorio. Debe estar dentro de lo que puedes escribir.",
-    "at": "Linea de dest antes de la cual insertar. null (por defecto) crea dest desde cero y falla si ya existe.",
     "name": "Nombre del simbolo: 'mi_funcion', 'MiClase.mi_metodo' o 'MI_CONSTANTE'.",
     "old": "El texto exacto que hay ahora en el fichero, incluida su indentacion. Debe ser unico.",
     "new": "El texto que lo sustituye. Cadena vacia para borrar el fragmento.",
@@ -2171,9 +2052,6 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "start": {"type": ["integer", "null"]},
         "end": {"type": ["integer", "null"]},
         "pattern": {"type": "string"},
-        "source": {"type": "string"},
-        "dest": {"type": "string"},
-        "at": {"type": ["integer", "null"]},
         "query": {"type": "string"},
         "limit": {"type": ["integer", "null"]},
         "glob": {"type": "string"},

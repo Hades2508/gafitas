@@ -88,10 +88,6 @@ COMO TRABAJAR
    mismo fichero una y otra vez gasta turnos y no averigua nada nuevo.
 2. LEE ANTES DE EDITAR. edit necesita el texto EXACTO que hay ahora, con su
    indentacion. Leelo con read_file y copialo.
-   Si lo que quieres es MOVER o EXTRAER codigo que ya existe -- sacar una
-   funcion a otro fichero, llevarte un bloque a otro sitio -- NO lo reescribas
-   a mano: copy_region lo copia byte a byte. Reescribir codigo que ya tienes
-   delante es la forma mas facil de cambiarlo sin querer.
 3. EJECUTA PARA VER. run te deja reproducir un fallo, imprimir un valor o
    comprobar un import. Cuando algo no funcione como esperas, MIRA lo que pasa
    en vez de suponerlo.
