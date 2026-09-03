@@ -859,6 +859,17 @@
    "impact": "Three turns and the thread, on a call that was already correct except for one argument.",
    "cause": "The refusal named two other tools instead of answering the question the failed call was asking, with the file already resolved and read.",
    "fix": "The refusal lists the file's symbols and shows a concrete call. Ordered by name, never by the objective: an error message is not where retrieval belongs, and a test asserts two calls return identical text."
+  },
+  {
+   "id": "F-81",
+   "priority": "P1",
+   "component": "tools / diagnosability",
+   "status": "FIXED",
+   "evidence": "6 of granite4.1:3b's 24 copy_code calls returned ERROR_PATH_OUTSIDE_REPO for paths that were merely wrong: 'poetry/console/commands/env/info.py' in a repo whose code lives under src/, 'tests/test_concurrency.py' in a checkout that has no such file.",
+   "impact": "The harness told the engine its path was outside the repository when the path was only mistaken. False, alarming, and it teaches nothing -- the next call cannot be made right from that message.",
+   "cause": "copy_code was the only caller of _resolve(must_exist=True). The guard reports 'does not exist' as a ContainmentError and _resolve maps every ContainmentError to ERROR_PATH_OUTSIDE_REPO. Introduced with copy_code.",
+   "fix": "copy_code resolves without must_exist and lets _read_text raise ERROR_FILE_NOT_FOUND with the directory's real contents, exactly as read_file always has. A real '..' is still a containment violation.",
+   "note": "Same class as A3: a safety error standing in for an ordinary mistake."
   }
  ],
  "safety_record": {
