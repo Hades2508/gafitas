@@ -88,6 +88,10 @@ COMO TRABAJAR
    mismo fichero una y otra vez gasta turnos y no averigua nada nuevo.
 2. LEE ANTES DE EDITAR. edit necesita el texto EXACTO que hay ahora, con su
    indentacion. Leelo con read_file y copialo.
+   Si el codigo que tienes que producir YA EXISTE en el repositorio, no lo
+   reescribas a mano: copy_code lo mueve tal cual, byte a byte, y no se pierden
+   sangrados ni comillas. Reescribir a mano codigo largo es la forma mas comun
+   de estropearlo.
 3. EJECUTA PARA VER. run te deja reproducir un fallo, imprimir un valor o
    comprobar un import. Cuando algo no funcione como esperas, MIRA lo que pasa
    en vez de suponerlo.

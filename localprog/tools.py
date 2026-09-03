@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import difflib
+import hashlib
 import re
 import subprocess
 import sys
@@ -994,26 +995,15 @@ def _nearest_region(text: str, old: str, width: int = 12) -> str:
             f"replace_lines('{{rel}}', start, end, content) con esos numeros de linea.")
 
 
-def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
-    """The source of one function or class, by name (F-50).
+def _symbol_span(rel: str, source: str, name: str
+                 ) -> tuple[str, Any, dict, int, int]:
+    """Which lines a named symbol occupies, decorators included.
 
-    Reading a named definition out of a large file is the commonest navigation
-    a programmer does, and it was three calls: list_symbols for the line
-    number, read_file with a guessed range, and usually another read because
-    the guess was short. Measured, both local models failed at it -- one spent
-    thirty of forty turns searching a file it had already identified and never
-    reached the tests.
-
-    ``name`` accepts "funcion" or "Clase.metodo". Line numbers are the file's
-    own, so the result feeds straight into replace_lines.
+    Shared by read_symbol and copy_code so the two cannot come to different
+    conclusions about what a symbol is. Returns the RESOLVED name -- a bare
+    method name that matched exactly one qualified symbol comes back qualified,
+    which is what the caller should report.
     """
-    rel, target = _resolve(ctx, path)
-    if not isinstance(name, str) or not name.strip():
-        raise InvalidCall(ERROR_BAD_ARGUMENTS, "name debe ser el nombre de una funcion o clase")
-    name = name.strip()
-
-    source = _read_text(rel, target)
-    ctx.opened.add(rel)
     _require_python(rel)
     try:
         tree = ast.parse(source)
@@ -1023,7 +1013,6 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
         raise ToolError(ERROR_SYNTAX, f"{rel!r}: {exc}") from None
 
     found = _collect_symbols(tree)
-
     node = found.get(name)
     if node is None:
         # A bare method name is what a model usually types, and refusing it
@@ -1049,8 +1038,31 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
     # Decorators sit above the def and are part of what the symbol IS.
     start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
     end = getattr(node, "end_lineno", None) or node.lineno
+    return name, node, found, start, min(end, len(source.splitlines()))
+
+
+def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
+    """The source of one function or class, by name (F-50).
+
+    Reading a named definition out of a large file is the commonest navigation
+    a programmer does, and it was three calls: list_symbols for the line
+    number, read_file with a guessed range, and usually another read because
+    the guess was short. Measured, both local models failed at it -- one spent
+    thirty of forty turns searching a file it had already identified and never
+    reached the tests.
+
+    ``name`` accepts "funcion" or "Clase.metodo". Line numbers are the file's
+    own, so the result feeds straight into replace_lines.
+    """
+    rel, target = _resolve(ctx, path)
+    if not isinstance(name, str) or not name.strip():
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "name debe ser el nombre de una funcion o clase")
+    name = name.strip()
+
+    source = _read_text(rel, target)
+    ctx.opened.add(rel)
+    name, node, found, start, end = _symbol_span(rel, source, name)
     lines = source.splitlines()
-    end = min(end, len(lines))
     # VERBATIM, with no per-line numbering (F-64). read_symbol exists to hand
     # back a symbol's source, and the commonest thing done with that source is
     # to reproduce it exactly -- into edit's `old`, or into a new file. A
@@ -1323,6 +1335,112 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
     ctx.created_files.add(rel)
     return (f"write_file aplicada en {rel}" + escape_note
             + _unreachable_note(rel, None, content))
+
+
+def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
+              start: Any = None, end: Any = None) -> dict:
+    """Copy a region of one file into another, byte for byte, without retyping it.
+
+    Either ``name`` (a symbol, where the language has a symbol index) or
+    ``start``/``end`` (line numbers, anywhere). The bytes come off disk; the
+    engine never carries them.
+
+    This is not a convenience. Carrying a payload is a measured limit:
+    granite4.1:3b loses one above 1600 characters through the text protocol and
+    above 800 natively, while the median function this harness is asked about is
+    longer than the first of those -- so there are answers it knows and cannot
+    emit. And read_symbol's own docstring records the cost for the reference
+    engine: the same model met the same file both ways and reproduced the
+    function byte for byte 72% of the time as plain text against 30% reading it
+    through the tools and writing it back.
+
+    The same act -- moving a definition verbatim -- is what an extract-to-module
+    refactor is made of, which is why dogfood08's frozen acceptance asserts
+    byte-identity rather than equivalence.
+
+    Appends when the destination exists AND this run created it. It will not
+    overwrite a file that was already in the repository: that is what edit and
+    replace_lines are for.
+    """
+    src_rel, src_path = _resolve(ctx, src, must_exist=True)
+    into_rel, into_path = _resolve(ctx, into)
+    source = _read_text(src_rel, src_path)
+    ctx.opened.add(src_rel)
+
+    has_name = isinstance(name, str) and name.strip()
+    has_lines = start is not None or end is not None
+    if has_name and has_lines:
+        raise InvalidCall(
+            ERROR_BAD_ARGUMENTS,
+            "copy_code toma name= O start=/end=, no las dos. Con name copias un "
+            "simbolo entero; con start/end copias un rango de lineas.")
+    if not has_name and not has_lines:
+        raise InvalidCall(
+            ERROR_BAD_ARGUMENTS,
+            "copy_code necesita name=<simbolo> o start=/end=<lineas>. Para ver "
+            f"que hay en {src_rel!r}: list_symbols o read_file.")
+
+    lines = source.splitlines()
+    if has_name:
+        name, _node, _found, lo, hi = _symbol_span(src_rel, source, name.strip())
+    else:
+        lo = _line_number("start", start if start is not None else 1, len(lines))
+        hi = _line_number("end", end, len(lines)) if end is not None else len(lines)
+        if hi < lo:
+            raise InvalidCall(ERROR_BAD_ARGUMENTS,
+                              f"end ({hi}) es menor que start ({lo})")
+    body = NEWLINE.join(lines[lo - 1:hi])
+
+    existing = ""
+    if into_path.exists():
+        if into_rel not in ctx.created_files:
+            raise ToolError(
+                ERROR_FILE_EXISTS,
+                f"{into_rel!r} ya existe y no lo has creado tu en esta mision. "
+                f"copy_code no sobrescribe codigo que ya estaba en el repositorio; "
+                f"para eso estan edit y replace_lines.")
+        _check_writable(ctx, into_rel, creating=False)
+        existing = _read_text(into_rel, into_path)
+    else:
+        _check_writable(ctx, into_rel, creating=True)
+
+    separator = "" if not existing or existing.endswith(NEWLINE) else NEWLINE
+    _write_text(into_path, existing + separator + body)
+    ctx.changed_files.add(into_rel)
+    ctx.created_files.add(into_rel)
+    return {
+        # Everything a reviewer needs to check the bytes came off disk and not
+        # out of the model. A tool that moves text nobody saw would otherwise be
+        # the one place a run could not be audited.
+        "copied_from": src_rel,
+        "symbol": name if has_name else None,
+        "lines": [lo, hi],
+        "into": into_rel,
+        "bytes": len(body.encode("utf-8")),
+        "sha256_16": hashlib.sha256(body.encode("utf-8")).hexdigest()[:16],
+        "appended": bool(existing),
+        # The ends only. Returning the body would put back into the transcript
+        # exactly the weight this tool exists to keep out of it.
+        "first_line": lines[lo - 1] if lines[lo - 1:hi] else "",
+        "last_line": lines[hi - 1] if lines[lo - 1:hi] else "",
+    }
+
+
+def _line_number(field: str, value: Any, total: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        try:
+            value = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise InvalidCall(ERROR_BAD_ARGUMENTS,
+                              f"{field} debe ser un numero de linea") from None
+    if value < 1:
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, f"{field} empieza en 1, no en {value}")
+    if value > total:
+        raise InvalidCall(
+            ERROR_BAD_ARGUMENTS,
+            f"{field}={value} pasa del final del fichero ({total} lineas)")
+    return value
+
 
 
 def list_dir(ctx: ToolContext, path: Any = ".", recursive: Any = False) -> dict:
@@ -1881,6 +1999,7 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "edit": (("path", "old", "new"), ()),
     "replace_lines": (("path", "start", "end", "content"), ()),
     "write_file": (("path", "content"), ()),
+    "copy_code": (("src", "into"), ("name", "start", "end")),
     "run": (("argv",), ("timeout",)),
     "run_tests": ((), ("node_ids",)),
     "finish": (("summary",), ("status",)),
@@ -1896,6 +2015,7 @@ _IMPL = {
     "edit": edit,
     "replace_lines": replace_lines,
     "write_file": write_file,
+    "copy_code": copy_code,
     "run": run,
     "run_tests": run_tests,
     "finish": finish,
@@ -2074,7 +2194,18 @@ TOOL_DOC: dict[str, str] = {
     ),
     "write_file": (
         "Crea un fichero NUEVO con el contenido dado. Falla si el fichero ya "
-        "existe: para modificar uno existente usa edit o replace_lines."
+        "existe y no lo has creado tu en esta mision: para modificar uno que ya "
+        "estaba en el repositorio usa edit o replace_lines."
+    ),
+    "copy_code": (
+        "Copia codigo de un fichero a otro TAL CUAL, sin que tengas que "
+        "reescribirlo. Dile de donde (src) y a donde (into), y luego O BIEN "
+        "name=<nombre de la funcion o clase> O BIEN start=/end=<lineas>. El "
+        "texto lo mueve la herramienta leyendolo del disco, asi que sale "
+        "identico byte a byte aunque sea largo. Usala siempre que tengas que "
+        "reproducir codigo que ya existe en el repositorio: copiarlo a mano es "
+        "mas lento y se pierden espacios, sangrados y comillas. Si el destino "
+        "ya lo creaste tu, anade al final."
     ),
     "run": (
         "Ejecuta un comando y devuelve su codigo de salida y su salida combinada. "
@@ -2104,6 +2235,8 @@ TOOL_DOC: dict[str, str] = {
 #: is not stated is a parameter the model has to guess.
 PARAM_DOC: dict[str, str] = {
     "path": "Ruta relativa a la raiz del repositorio, con barras normales: 'pkg/mod.py'.",
+    "src": "Fichero del que se copia, relativo a la raiz del repositorio.",
+    "into": "Fichero al que se copia. Si no existe se crea; si lo creaste tu en esta mision, se anade al final.",
     "recursive": "Booleano; si es True, lista tambien el contenido de los subdirectorios con rutas relativas. Por defecto False.",
     "start": "Primera linea, empezando en 1. En read_file, null lee desde el principio.",
     "end": "Ultima linea, incluida. En read_file, null lee hasta el final.",
@@ -2196,6 +2329,8 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "old": {"type": "string"},
         "new": {"type": "string"},
         "content": {"type": "string"},
+    "src": {"type": "string"},
+    "into": {"type": "string"},
         "name": {"type": "string"},
         "argv": {"type": "array", "items": {"type": "string"}},
         "timeout": {"type": ["number", "null"]},
