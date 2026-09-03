@@ -213,3 +213,33 @@ def test_a_line_number_past_the_end_says_how_long_the_file_is(tmp_path):
     with pytest.raises(InvalidCall) as exc:
         tools.copy_code(ctx, "origen.py", "salida.py", start=1, end=9999)
     assert "lineas" in exc.value.detail
+
+
+def test_a_wrong_path_is_a_wrong_path_not_a_containment_violation(tmp_path):
+    """copy_code used _resolve(must_exist=True), and the guard reports "does not
+    exist" as a ContainmentError, which becomes ERROR_PATH_OUTSIDE_REPO. So
+    granite4.1:3b was told six times that its path was outside the repository
+    when the path was merely wrong -- false, alarming, and teaching it nothing.
+
+    Same defect class as A3: a safety error standing in for an ordinary mistake.
+    """
+    from localprog.errors import ERROR_FILE_NOT_FOUND, ERROR_PATH_OUTSIDE_REPO
+
+    ctx = ctx_for(tmp_path)
+    with pytest.raises(ToolError) as exc:
+        tools.copy_code(ctx, "no/existe.py", "salida.py", name="sencilla")
+    assert exc.value.code == ERROR_FILE_NOT_FOUND
+
+    # And a REAL containment violation is still exactly that.
+    with pytest.raises(ToolError) as exc:
+        tools.copy_code(ctx, "../fuera.py", "salida.py", name="sencilla")
+    assert exc.value.code == ERROR_PATH_OUTSIDE_REPO
+
+
+def test_the_not_found_message_lists_what_is_actually_there(tmp_path):
+    """The same help read_file gives, for the same reason: the next call should
+    be able to be right."""
+    ctx = ctx_for(tmp_path)
+    with pytest.raises(ToolError) as exc:
+        tools.copy_code(ctx, "origen_mal.py", "salida.py", name="sencilla")
+    assert "origen.py" in exc.value.detail

@@ -1387,7 +1387,14 @@ def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
     overwrite a file that was already in the repository: that is what edit and
     replace_lines are for.
     """
-    src_rel, src_path = _resolve(ctx, src, must_exist=True)
+    # NOT must_exist=True. The guard reports "does not exist" as a
+    # ContainmentError, which _resolve turns into ERROR_PATH_OUTSIDE_REPO -- so a
+    # simple wrong path was reported to granite4.1:3b six times as a containment
+    # violation, which is both false and undiagnosable. _read_text below raises
+    # ERROR_FILE_NOT_FOUND with the directory's actual contents, exactly as
+    # read_file does. Same defect class as A3: a safety error standing in for an
+    # ordinary mistake teaches the agent nothing and looks alarming.
+    src_rel, src_path = _resolve(ctx, src)
     into_rel, into_path = _resolve(ctx, into)
     source = _read_text(src_rel, src_path)
     ctx.opened.add(src_rel)
