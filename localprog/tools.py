@@ -141,6 +141,12 @@ class ToolContext:
     allowed_new_files: tuple[str, ...] = ()
     acceptance_tests: tuple[str, ...] = ()
     changed_files: set[str] = field(default_factory=set)
+    #: Paths THIS RUN brought into existence. Separate from changed_files
+    #: because the permission it carries is different: a file the agent created
+    #: may be rewritten, and a file that was already in the repository may not
+    #: become writable just because it was edited once. Only write_file adds to
+    #: it, and only after _check_writable has already allowed the creation.
+    created_files: set[str] = field(default_factory=set)
     test_timeout: float = TEST_TIMEOUT_SECONDS
     run_timeout: float = RUN_TIMEOUT_SECONDS
     #: Set once a run_tests call reported every declared test green. Read by
@@ -434,6 +440,14 @@ def _check_writable(ctx: ToolContext, rel: str, *, creating: bool) -> None:
     touch -- and since F-05 that is answered by a pattern language instead of
     string equality against a list the mission author had to guess in advance.
     """
+    if rel in ctx.created_files:
+        # This run created it, so this run may rewrite it. Without this the
+        # mission's own output file is unreachable after the first draft:
+        # write_file says "ya existe, usa edit" and edit says "fuera de
+        # write_scope", and there is no third door. Deliberately keyed on what
+        # was actually created rather than on allowed_new_files, so a mission
+        # that names an existing source file by mistake grants nothing.
+        return
     if not ctx.scope.allows(rel, creating=creating):
         verb = "crear" if creating else "modificar"
         # A3. Scope matching is case-SENSITIVE on purpose: Windows is not, and a
@@ -1282,8 +1296,16 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
     if not isinstance(content, str):
         raise InvalidCall(ERROR_BAD_ARGUMENTS, "content debe ser una cadena")
     content, escape_note = _unescape_if_flattened("content", content)
-    if target.exists():
-        raise ToolError(ERROR_FILE_EXISTS, f"{rel!r} ya existe. Usa edit.")
+    rewriting = rel in ctx.created_files
+    if target.exists() and not rewriting:
+        # Still refused for a file that was already in the repository: an
+        # accidental whole-file overwrite of real source is the thing this
+        # guard exists for, and edit/replace_lines are the right tools there.
+        raise ToolError(
+            ERROR_FILE_EXISTS,
+            f"{rel!r} ya existe y no lo has creado tu en esta mision. "
+            f"Para cambiarlo usa edit(path={rel!r}, old=..., new=...) o "
+            f"replace_lines.")
     if rel.endswith(".py"):
         try:
             ast.parse(content)
@@ -1298,6 +1320,7 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
             raise ToolError(ERROR_SYNTAX_AFTER_EDIT, f"{rel!r}: {exc}. NO se ha escrito nada.") from None
     _write_text(target, content)
     ctx.changed_files.add(rel)
+    ctx.created_files.add(rel)
     return (f"write_file aplicada en {rel}" + escape_note
             + _unreachable_note(rel, None, content))
 
