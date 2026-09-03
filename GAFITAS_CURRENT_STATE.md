@@ -4,7 +4,7 @@ Single operational state file. If you come back to this in a week, read only
 this.
 
 **Canonical root:** `D:\LOCAL-PROGRAMMER-ROOT`, package `localprog`.
-**Suite:** 457 tests green (two xfail-marked UNSUPPORTED cases — see below).
+**Suite:** 604 passed, 12 xfailed (recorded UNSUPPORTED boundaries — see below).
 
 ```bash
 python -m localprog work --out <DIR> --tier LOCAL --model qwen3:4b-instruct-2507-q4_K_M --local-attempts 3 --tickets <t.json>
@@ -81,8 +81,15 @@ Hardware: RTX 3080 Ti, 12 GB. Idle after a batch: **47 °C, 19 W, fan off, 1.2 G
 | — | `qwen2.5-coder:7b` | Unusable: no native tool call at all, re-screened after F-02. |
 | LUNA | `gpt-5.6-luna` via Codex, protocol J | **Off by default.** Teacher and control during development. |
 
-**11 tools:** `read_file · list_dir · grep(context) · list_symbols · read_symbol ·
-edit · replace_lines · write_file · run · run_tests · finish`
+**13 tools:** `read_file · list_dir · grep(context) · search_code · list_symbols ·
+read_symbol · edit · replace_lines · write_file · copy_code · run · run_tests ·
+finish`
+
+Not all thirteen are declared on every mission. `legal_tools` derives the
+declared surface from the mission's write scope: a mission that may only CREATE
+a file is not offered `edit`, because no argument could make it succeed. An
+ordinary ticket with a real write scope sees all thirteen. Looking and finishing
+are never withheld, and the frozen screen pins its own seven regardless.
 
 ---
 
