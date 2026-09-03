@@ -452,11 +452,24 @@ def _check_writable(ctx: ToolContext, rel: str, *, creating: bool) -> None:
                     f"diferencia es solo de mayusculas/minusculas, y el ambito "
                     f"las distingue a proposito para que se comporte igual en "
                     f"Windows y en Linux. Escribe la ruta como esta en el disco.")
+        # The work first, the boundary second -- the F-71 correction applied to
+        # the other refusal that only ever said no. A mission waiting for a file
+        # that does not exist knows exactly what it wants; describing the scope
+        # and stopping there left 18 of 23 granite runs to quit at turn three.
+        pending = [name for name in ctx.allowed_new_files
+                   if not (ctx.root / name).exists()]
+        wanted = ""
+        if pending:
+            wanted = (f"\n  ESTA MISION ESPERA QUE CREES: {', '.join(pending[:4])}. "
+                      f"Todavia no existe, asi que no hay nada que editar ahi.\n"
+                      f"  Para crearlo: write_file(path='{pending[0]}', "
+                      f"content=<el texto entero>).")
         raise ToolError(
             ERROR_NOT_IN_WRITE_SCOPE,
-            f"no puedes {verb} {rel!r}: esta fuera de write_scope." \
-            f"\n  Ambito de escritura: {ctx.scope.describe(creating=creating)}" \
-            f"\n  (un ambito que acaba en '/' incluye todo lo que hay debajo)" + hint,
+            f"no puedes {verb} {rel!r}: esta fuera de write_scope."
+            + wanted
+            + f"\n  Ambito de escritura: {ctx.scope.describe(creating=creating)}"
+            + "\n  (un ambito que acaba en '/' incluye todo lo que hay debajo)" + hint,
         )
 
 
@@ -2093,6 +2106,39 @@ assert set(TOOL_DOC) == set(SPECS), "TOOL_DOC and SPECS must describe the same t
 assert set(PARAM_DOC) >= {p for req, opt in SPECS.values() for p in req + opt}, (
     "every parameter in SPECS needs an entry in PARAM_DOC"
 )
+
+
+#: Tools that need an EXISTING file inside the write scope. On a mission whose
+#: scope is empty -- only new files may be created -- no argument can satisfy
+#: them, so offering them is offering a dead end.
+_NEEDS_EXISTING_WRITABLE = ("edit", "replace_lines")
+
+#: Tools that need somewhere to write at all.
+_NEEDS_ANY_WRITE = ("write_file",)
+
+
+def legal_tools(write_scope: tuple[str, ...],
+                allowed_new_files: tuple[str, ...]) -> tuple[str, ...]:
+    """The tools this mission's scope can actually satisfy, in SPECS order.
+
+    A pure function of deterministic mission state, so the schema (protocol A)
+    and the manual (protocol J) can be built from it without either one holding
+    a ToolContext.
+
+    Read-only tools are never withheld: a mission always permits looking, and an
+    agent that cannot look cannot decide. ``finish`` is never withheld either --
+    removing the way out is how a loop turns a wrong turn into a hung run.
+    """
+    can_edit_existing = bool(write_scope)
+    can_write_new = bool(write_scope) or bool(allowed_new_files)
+    out = []
+    for name in SPECS:
+        if name in _NEEDS_EXISTING_WRITABLE and not can_edit_existing:
+            continue
+        if name in _NEEDS_ANY_WRITE and not can_write_new:
+            continue
+        out.append(name)
+    return tuple(out)
 
 
 def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:

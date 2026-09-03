@@ -317,7 +317,13 @@ def system_prompt(ticket: Ticket, protocol: str = "A") -> str:
         max_turns=ticket.max_turns,
     )
     if protocol == "J":
-        text += "\n\n" + tools.text_manual() + "\n" + protocol_mod.JSON_INSTRUCTIONS
+        # The same surface protocol A gets through the schema channel. If the
+        # manual advertised a tool the schema withholds, the two tiers would
+        # disagree about what this mission permits -- and protocol J is exactly
+        # where the small engines run.
+        legal = tools.legal_tools(tuple(ticket.write_scope),
+                                  tuple(ticket.allowed_new_files))
+        text += "\n\n" + tools.text_manual(legal) + "\n" + protocol_mod.JSON_INSTRUCTIONS
     return text
 
 
@@ -450,7 +456,9 @@ def run_ticket(
             budget_chars=budget_chars(
                 num_ctx,
                 num_predict=WORK_NUM_PREDICT,
-                schema_chars=len(json.dumps(tools.native_schema()))
+                schema_chars=len(json.dumps(tools.native_schema(
+                    tools.legal_tools(tuple(ticket.write_scope),
+                                      tuple(ticket.allowed_new_files)))))
                 if protocol == "A" else 0,
                 system_chars=len(system_prompt(ticket, protocol)),
             ),

@@ -409,7 +409,14 @@ def run_loop(
         ),
         budget_chars=budget_chars,
     )
-    schema = tools.native_schema(declare_tools) if protocol_name == "A" else None
+    # An explicit declare_tools still wins: the frozen screen names its seven
+    # and must keep naming exactly those, or it stops being comparable with the
+    # runs already on disk. Otherwise the surface is whatever this mission's
+    # scope can actually satisfy.
+    declared = (declare_tools if declare_tools is not None
+                else tools.legal_tools(tuple(ctx.write_scope),
+                                       tuple(ctx.allowed_new_files)))
+    schema = tools.native_schema(declared) if protocol_name == "A" else None
     result = LoopResult(outcome=BUDGET_EXHAUSTED)
     used: Counter = Counter()
     signatures: Counter = Counter()
