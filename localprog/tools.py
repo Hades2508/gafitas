@@ -55,6 +55,7 @@ from .errors import (
     ERROR_SYNTAX,
     ERROR_SYNTAX_AFTER_EDIT,
     ERROR_TOO_MANY_ENTRIES,
+    ERROR_UNREACHABLE_CODE,
     ERROR_UNKNOWN_TOOL,
     HarnessInvalid,
     InvalidCall,
@@ -96,6 +97,8 @@ MAX_DIR_ENTRIES = 200
 #: read in one turn, wide enough that offline the needle is inside it for
 #: 82 of 100 RepoQA python cases.
 SEARCH_DEFAULT_LIMIT = 15
+#: How many of each search's candidates are remembered for the give-up question.
+TRACKED_CANDIDATES = 3
 MAX_SEARCH_LIMIT = 50
 
 #: How many files a failed grep names when it reports where matches DO live.
@@ -175,6 +178,12 @@ class ToolContext:
     blocked_once: bool = False
     #: Whether an empty-diff NO_CHANGE has already been questioned once (F-61).
     no_change_once: bool = False
+    #: The best-ranked candidates search_code has shown, in the order it showed
+    #: them, and every file or symbol the agent has actually opened (F-67). Both
+    #: are facts about the agent's own session, and the harness holding them
+    #: while the agent gives up on turn six is the same defect as F-45.
+    top_candidates: list = field(default_factory=list)
+    opened: set = field(default_factory=set)
     #: Budget state, written by the loop each turn so finish can weigh
     #: 'I am stuck' against 'I have barely started'.
     turns_left: int | None = None
@@ -491,6 +500,7 @@ def _range_note(rel: str, text: str, lo: int, hi: int) -> str:
 def read_file(ctx: ToolContext, path: Any, start: Any = None, end: Any = None) -> str:
     rel, target = _resolve(ctx, path)
     text = _read_text(rel, target)
+    ctx.opened.add(rel)
     lines = text.splitlines()
     total = len(lines)
 
@@ -766,6 +776,11 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
         "score": round(score, 2),
     } for n, (region, score) in enumerate(raw, 1)]
 
+    for row in candidates[:TRACKED_CANDIDATES]:
+        entry = (row["path"], row["lines"], row["declares"])
+        if entry not in ctx.top_candidates:
+            ctx.top_candidates.append(entry)
+
     return {
         "query": query,
         "candidates": candidates,
@@ -941,6 +956,7 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
     name = name.strip()
 
     source = _read_text(rel, target)
+    ctx.opened.add(rel)
     _require_python(rel)
     try:
         tree = ast.parse(source)
@@ -1009,6 +1025,66 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
     )
 
 
+#: Statements after which nothing in the same block can run.
+TERMINATORS = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+
+
+def _unreachable(source: str) -> list[tuple[int, str]]:
+    """Statements that can never execute, as (line, the statement's kind).
+
+    Only the certain case: a statement standing directly after a return, raise,
+    break or continue in the SAME block. No flow analysis, no cleverness, no
+    opinions about style -- just the one thing that is unreachable under every
+    reading of the language.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        return []
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            for previous, statement in zip(block, block[1:]):
+                if isinstance(previous, TERMINATORS):
+                    found.append((getattr(statement, "lineno", 0),
+                                  type(statement).__name__))
+    return sorted(set(found))
+
+
+def _unreachable_note(rel: str, before: str | None, after: str) -> str:
+    """Report code the edit made unreachable, without nagging about the rest.
+
+    A dogfood candidate passed its acceptance and left a second ``return out``
+    below the first. Tester was right -- the behaviour was correct -- and the
+    diff still was not promotable, which cost a manual cleanup pass. The harness
+    can see it for the price of one parse, and only complains about what THIS
+    edit introduced.
+    """
+    if not rel.endswith(".py"):
+        return ""
+    new = _unreachable(after)
+    if not new:
+        return ""
+    old = set(_unreachable(before)) if before is not None else set()
+    # compare by kind and count rather than by line, because an edit above moves
+    # every line below it and would otherwise look like a new defect.
+    introduced = [x for x in new if x not in old]
+    if before is not None and len(new) <= len(old):
+        return ""
+    if not introduced:
+        return ""
+    where = ", ".join(f"linea {line} ({kind})" for line, kind in introduced[:4])
+    return (
+        f"{NEWLINE}[{ERROR_UNREACHABLE_CODE}: el fichero ha quedado con codigo "
+        f"que no se puede ejecutar nunca -- {where} viene justo despues de un "
+        f"return/raise/break/continue en el mismo bloque. Los tests pueden pasar "
+        f"igual; el codigo sigue estando muerto. Borralo.]"
+    )
+
+
 def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
     rel, target = _resolve(ctx, path)
     _check_writable(ctx, rel, creating=False)
@@ -1061,7 +1137,8 @@ def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
 
     _write_text(target, candidate)
     ctx.changed_files.add(rel)
-    return f"edit aplicada en {rel}" + escape_note
+    return (f"edit aplicada en {rel}" + escape_note
+            + _unreachable_note(rel, text, candidate))
 
 
 def replace_lines(ctx: ToolContext, path: Any, start: Any, end: Any, content: Any) -> str:
@@ -1132,7 +1209,9 @@ def replace_lines(ctx: ToolContext, path: Any, start: Any, end: Any, content: An
     ctx.changed_files.add(rel)
     replaced = stop - start + 1
     written = body.count("\n")
-    return f"replace_lines: {rel} lineas {start}-{stop} ({replaced}) sustituidas por {written} lineas" + escape_note
+    return (f"replace_lines: {rel} lineas {start}-{stop} ({replaced}) "
+            f"sustituidas por {written} lineas"
+            + escape_note + _unreachable_note(rel, text, candidate))
 
 
 def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
@@ -1157,7 +1236,8 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
             raise ToolError(ERROR_SYNTAX_AFTER_EDIT, f"{rel!r}: {exc}. NO se ha escrito nada.") from None
     _write_text(target, content)
     ctx.changed_files.add(rel)
-    return f"write_file aplicada en {rel}" + escape_note
+    return (f"write_file aplicada en {rel}" + escape_note
+            + _unreachable_note(rel, None, content))
 
 
 def list_dir(ctx: ToolContext, path: Any = ".", recursive: Any = False) -> dict:
@@ -1482,6 +1562,133 @@ def run_tests(ctx: ToolContext, node_ids: Any = None) -> dict:
     return result
 
 
+def copy_region(ctx: ToolContext, source: Any, start: Any, end: Any,
+                dest: Any, at: Any = None) -> str:
+    """Copy lines *start*..*end* of *source* into *dest*, byte for byte (F-66).
+
+    The one thing the tool surface could not do: put code somewhere else without
+    the model retyping it. Extracting a helper into its own module, moving a
+    handler between files, lifting a block into a new test -- all of them went
+    through read, then write_file, with the whole body passing through the model
+    and out again as a JSON string argument.
+
+    That round trip loses text, measurably. On the matched evaluation, where the
+    same model met the same file both ways, it reproduced a function byte for
+    byte 72% of the time when it answered in prose and 40% when it read the file
+    with tools and wrote it back. The losses are not paraphrase: bodies flattened
+    into escaped one-liners, docstrings whose quotes came back doubled, a copy
+    that stopped at line 17 of 37, a copy that ran seven lines past the end of
+    the function and into the next one, and a line where the source said
+    ``gevent.ssl.create_default_context()`` and the answer said
+    ``ssl.SSLContext(ssl.PROTOCOL_TLS)``.
+
+    None of that is the model failing to understand the code. It is a copy
+    performed by a language model because the harness had no way to perform it.
+
+    ``at`` chooses between the two shapes a move actually takes: omitted, *dest*
+    must not exist and is created; given a line number, the text is inserted
+    before that line of an existing *dest*. Deleting the original is a separate
+    call, on purpose -- a tool that moves code should not also be able to lose
+    it.
+    """
+    src_rel, src_target = _resolve(ctx, source, must_exist=True)
+    text = _read_text(src_rel, src_target)
+    lines = text.splitlines()
+    total = len(lines)
+
+    for name, value in (("start", start), ("end", end)):
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise InvalidCall(ERROR_BAD_ARGUMENTS,
+                              f"{name} debe ser un entero (linea, empezando en 1)")
+    if start < 1 or end < start:
+        raise ToolError(ERROR_BAD_RANGE,
+                        f"rango {start}-{end} invalido: start >= 1 y end >= start.")
+    if start > total:
+        raise ToolError(ERROR_BAD_RANGE,
+                        f"{src_rel!r} tiene {total} lineas; la {start} no existe.")
+    stop = min(end, total)
+    body = NEWLINE.join(lines[start - 1:stop])
+    if len(body) > MAX_TOOL_PAYLOAD_CHARS * 4:
+        raise ToolError(
+            ERROR_BAD_RANGE,
+            f"el rango {start}-{stop} son {len(body)} caracteres. Copia menos de "
+            f"una vez, o parte el trabajo.",
+        )
+
+    dest_rel, dest_target = _resolve(ctx, dest)
+    creating = at is None
+    _check_writable(ctx, dest_rel, creating=creating)
+
+    if creating:
+        if dest_target.exists():
+            raise ToolError(
+                ERROR_FILE_EXISTS,
+                f"{dest_rel!r} ya existe. Para insertar dentro de un fichero que "
+                f"ya esta, pasa at=<linea>.",
+            )
+        result = body + NEWLINE
+        where = f"creando {dest_rel!r}"
+    else:
+        if not isinstance(at, int) or isinstance(at, bool) or at < 1:
+            raise InvalidCall(ERROR_BAD_ARGUMENTS,
+                              "at debe ser un entero >= 1, o null para crear el fichero")
+        dest_text = _read_text(dest_rel, dest_target)
+        dest_lines = dest_text.splitlines()
+        if at > len(dest_lines) + 1:
+            raise ToolError(
+                ERROR_BAD_RANGE,
+                f"{dest_rel!r} tiene {len(dest_lines)} lineas; no puedo insertar "
+                f"en la {at}. Usa at<={len(dest_lines) + 1}.",
+            )
+        cut = at - 1
+        result = NEWLINE.join(dest_lines[:cut] + lines[start - 1:stop]
+                              + dest_lines[cut:]) + NEWLINE
+        where = f"insertando en {dest_rel!r} antes de la linea {at}"
+
+    if dest_rel.endswith(".py"):
+        try:
+            ast.parse(result)
+        except SyntaxError as exc:
+            raise ToolError(
+                ERROR_SYNTAX_AFTER_EDIT,
+                f"{dest_rel!r} no parseria:" + NEWLINE
+                + _syntax_report(result, exc, dest_rel)
+                + NEWLINE + "  NO se ha escrito nada. Un metodo movido a nivel de "
+                "modulo suele necesitar que le quites la indentacion.",
+            ) from None
+        except ValueError as exc:
+            raise ToolError(ERROR_SYNTAX_AFTER_EDIT,
+                            f"{dest_rel!r}: {exc}. NO se ha escrito nada.") from None
+
+    _write_text(dest_target, result)
+    ctx.changed_files.add(dest_rel)
+    return (f"copy_region: {stop - start + 1} lineas de {src_rel}:{start}-{stop} "
+            f"copiadas TAL CUAL, {where}")
+
+
+def _navigation_note(ctx: ToolContext) -> str:
+    """What the agent's own session says about where it has and has not looked.
+
+    Facts, not hints: how many candidates a search returned, and which of the
+    best-ranked ones were never opened. Measured on the dev set, 15 of 100 runs
+    were shown the right function by search_code and then finished without ever
+    reading it, or read it and declared nothing matched. The harness held both
+    halves of that and said neither.
+    """
+    if not ctx.top_candidates:
+        return ""
+    unopened = [c for c in ctx.top_candidates if c[0] not in ctx.opened]
+    if not unopened:
+        return (f"{NEWLINE}  Has abierto los {len(ctx.top_candidates)} mejores "
+                f"candidatos que te devolvio search_code, asi que descartarlos "
+                f"esta justificado.")
+    shown = NEWLINE.join(f"    {path} (lineas {span}) {decl[:70]}"
+                         for path, span, decl in unopened[:4])
+    return (f"{NEWLINE}  search_code te devolvio estos candidatos bien puntuados "
+            f"y NO has abierto ninguno:{NEWLINE}{shown}{NEWLINE}"
+            f"  Mirarlos cuesta una llamada.")
+
+
 def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
     """End the turn deliberately, saying which kind of ending this is.
 
@@ -1601,6 +1808,7 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
             ERROR_NOTHING_CHANGED,
             "antes de aceptar 'no hace falta ningun cambio': NO has creado ni "
             "modificado NINGUN fichero en todo el run." + expected
+            + _navigation_note(ctx)
             + "\n  Si crees que ya escribiste algo, no llego a disco: compruebalo "
             "con read_file o list_dir y escribelo ahora si falta.\n"
             "  Si de verdad no hay nada que hacer, vuelve a llamar a "
@@ -1615,9 +1823,12 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
     # a third of the budget is unspent, is answered with the last failure and
     # one question. A second BLOCKED is accepted immediately, always -- the same
     # shape as the double-finish that already confirms NO_CHANGE.
+    # F-67: the acceptance_tests condition used to be here, and it meant the
+    # question never fired for a mission that declares none -- which is most of
+    # the ones where giving up early is the whole failure. What justifies asking
+    # is unspent budget and a first refusal, not whether a suite exists.
     if (
         normalised == "BLOCKED"
-        and ctx.acceptance_tests
         and not ctx.blocked_once
         and ctx.turns_left is not None
         # A floor as well as a fraction: on a 4-turn budget a third is one
@@ -1633,6 +1844,7 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
             detail += "\n  Ultimo error:\n" + "\n".join(
                 "    " + l for l in ctx.last_test_failure.strip().splitlines()[-10:]
             )
+        detail += _navigation_note(ctx)
         raise ToolError(
             ERROR_NOT_VERIFIED,
             f"antes de darte por vencido: todavia te quedan {ctx.turns_left} turnos."
@@ -1658,6 +1870,7 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "read_file": (("path",), ("start", "end")),
     "list_dir": ((), ("path", "recursive")),
     "grep": (("pattern",), ("glob", "context", "ignore_case")),
+    "copy_region": (("source", "start", "end", "dest"), ("at",)),
     "search_code": (("query",), ("limit", "path")),
     "list_symbols": (("path",), ()),
     "read_symbol": (("path", "name"), ()),
@@ -1673,6 +1886,7 @@ _IMPL = {
     "read_file": read_file,
     "list_dir": list_dir,
     "grep": grep,
+    "copy_region": copy_region,
     "search_code": search_code,
     "list_symbols": list_symbols,
     "read_symbol": read_symbol,
@@ -1825,6 +2039,16 @@ TOOL_DOC: dict[str, str] = {
         "aciertes el literal exacto, esto no. Funciona en cualquier lenguaje. "
         "Despues lee el candidato que encaje con read_symbol o read_file."
     ),
+    "copy_region": (
+        "Copia un tramo de lineas de un fichero a otro TAL CUAL, byte a byte, sin "
+        "que el texto pase por ti. Es la forma de mover o extraer codigo que ya "
+        "existe -- sacar una funcion a su propio modulo, llevar un bloque a otro "
+        "fichero -- sin tener que reescribirlo y sin arriesgarte a cambiarlo por "
+        "el camino. Sin 'at' crea el fichero de destino (falla si ya existe); con "
+        "at=<linea> lo inserta en un fichero que ya existe, antes de esa linea. "
+        "Los numeros de linea te los dan search_code, read_symbol y read_file. "
+        "Borrar el original, si hace falta, es otra llamada."
+    ),
     "list_symbols": (
         "Devuelve lo que define un fichero Python -- funciones, clases y tambien "
         "las constantes y tablas de modulo -- con su numero de linea, en forma "
@@ -1896,6 +2120,9 @@ PARAM_DOC: dict[str, str] = {
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
     "context": "Lineas de contexto alrededor de cada coincidencia (0-20). 0 solo da la linea.",
     "ignore_case": "Booleano; si es True, busca sin distinguir mayusculas y minusculas. Por defecto False.",
+    "source": "Fichero del que copiar, ruta relativa al repositorio.",
+    "dest": "Fichero al que copiar, ruta relativa al repositorio. Debe estar dentro de lo que puedes escribir.",
+    "at": "Linea de dest antes de la cual insertar. null (por defecto) crea dest desde cero y falla si ya existe.",
     "name": "Nombre del simbolo: 'mi_funcion', 'MiClase.mi_metodo' o 'MI_CONSTANTE'.",
     "old": "El texto exacto que hay ahora en el fichero, incluida su indentacion. Debe ser unico.",
     "new": "El texto que lo sustituye. Cadena vacia para borrar el fragmento.",
@@ -1938,6 +2165,9 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "start": {"type": ["integer", "null"]},
         "end": {"type": ["integer", "null"]},
         "pattern": {"type": "string"},
+        "source": {"type": "string"},
+        "dest": {"type": "string"},
+        "at": {"type": ["integer", "null"]},
         "query": {"type": "string"},
         "limit": {"type": ["integer", "null"]},
         "glob": {"type": "string"},

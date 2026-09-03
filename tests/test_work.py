@@ -793,10 +793,18 @@ def test_a_candidate_is_not_a_pass(repo, tmp_path):
 
 
 def test_no_declared_tests_and_no_change_is_not_a_candidate(repo, tmp_path):
+    """Two BLOCKED calls, because F-67 questions the first one.
+
+    The gate used to require declared acceptance tests, which meant a mission
+    that declares none -- most of the ones where giving up early IS the failure
+    -- was never asked anything. A second BLOCKED is still accepted immediately,
+    so the outcome this test is about is unchanged.
+    """
     result = work.run_ticket(
         ticket(repo, acceptance_tests=(), full_suite=False), "fake",
         provider_factory=scripted(
             tc("finish", summary="no encuentro nada", status="BLOCKED"),
+            tc("finish", summary="no encuentro nada, de verdad", status="BLOCKED"),
         ),
         out_dir=tmp_path / "out", base_dir=tmp_path,
     )

@@ -188,6 +188,12 @@ ERROR_LANGUAGE_UNSUPPORTED = "ERROR_LANGUAGE_UNSUPPORTED"
 #: write is how you corrupt the one case where the model meant it.
 ERROR_ESCAPED_CONTENT = "ERROR_ESCAPED_CONTENT"
 
+#: The edit left a statement that can never run -- code after a return, raise,
+#: break or continue in the same block. Not a syntax error, so nothing catches
+#: it; not a style opinion either, because unreachable code is unreachable
+#: whatever anyone's taste. Reported as a WARNING on a write that succeeded.
+ERROR_UNREACHABLE_CODE = "ERROR_UNREACHABLE_CODE"
+
 TOOL_ERROR_CODES = frozenset({
     ERROR_PATH_OUTSIDE_REPO,
     ERROR_FILE_NOT_FOUND,
