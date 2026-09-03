@@ -839,6 +839,26 @@
    "impact": "Every write in this harness makes the engine retype text the harness already has on disk. For a small engine that is disqualifying rather than wasteful: there are answers it knows and cannot emit.",
    "cause": "No tool moved bytes. All of them moved them THROUGH the model.",
    "fix": "copy_code(src, into, name=|start=/end=). Returns source, range, byte count and sha256 instead of the body, so a reviewer can check the bytes came off disk and the transcript does not get back the weight the tool exists to keep out. The matched task IS copy-a-function, so any matched gain is upper-bounded by the task's shape; dogfood08 -- extract-to-module, failed 3/3, byte-identity in its frozen acceptance -- is the general test."
+  },
+  {
+   "id": "F-79",
+   "priority": "P1",
+   "component": "retrieval scope",
+   "status": "FIXED",
+   "evidence": "Reproduced on the real corpus: search_code('returns a string of newlines and optionally a form feed', path='src/black/nodes.py') ranked src/black/comments.py first. ERROR_NO_MATCH was the most common error in the whole 50-run reference corpus, 33 of them. With the file honoured, make_simple_prefix -- the function that run spent 15 turns failing to find, finishing with nothing written -- ranks first.",
+   "impact": "On a mission whose objective NAMES the file, the agent scoped its search to that file and was answered from a different one, silently.",
+   "cause": "path was resolved as a DIRECTORY prefix, so a file became the prefix 'src/black/nodes.py/', nothing was indexed under it, and F-69's scope note correctly reported 'nothing under that prefix' and widened to everything. Every step behaved as written; their sum discarded the constraint.",
+   "fix": "A file path filters to that file. F-69 keeps the case it was built for -- a prefix that names nothing. A file that exists but carves no regions says so rather than answering from elsewhere."
+  },
+  {
+   "id": "F-80",
+   "priority": "P2",
+   "component": "tools",
+   "status": "FIXED",
+   "evidence": "granite4.1:3b, first copy_code run: t1 copy_code(src=..., into=...) with the selector missing -> 'para ver que hay: list_symbols o read_file'; t2 read_file; t3 finish refused; t4 wrote the DESCRIPTION into the answer file. It never came back to copy_code. Adoption was nonetheless 7 of 12 runs, and copy_code was the FIRST tool in 7 -- against copy_region's historical 0 uses.",
+   "impact": "Three turns and the thread, on a call that was already correct except for one argument.",
+   "cause": "The refusal named two other tools instead of answering the question the failed call was asking, with the file already resolved and read.",
+   "fix": "The refusal lists the file's symbols and shows a concrete call. Ordered by name, never by the objective: an error message is not where retrieval belongs, and a test asserts two calls return identical text."
   }
  ],
  "safety_record": {
