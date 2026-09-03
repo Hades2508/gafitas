@@ -61,6 +61,13 @@ REGISTRY = Path(__file__).resolve().parent.parent / "ENGINES.json"
 CONSERVATIVE_CONTEXT = 8192
 CONSERVATIVE_OUTPUT = 1024
 
+#: The payload a real mission asks a tool to carry, in characters. The median
+#: RepoQA needle body is around 1200 and a source edit is routinely larger, so
+#: an engine that cannot push a kilobyte through its native channel is better
+#: driven by the text protocol. A threshold, not a per-engine rule: it is
+#: compared against a number every engine is measured for.
+PAYLOAD_FLOOR = 1024
+
 
 @dataclass(frozen=True)
 class EngineCapabilities:
@@ -81,8 +88,19 @@ class EngineCapabilities:
     max_output_tokens: int | None = UNKNOWN
     #: Will it emit a structured tool call when handed a tool schema?
     supports_native_tools: bool | None = UNKNOWN
+    #: How many characters of payload survive a NATIVE tool call, measured.
+    #: ``supports_native_tools`` answers "can it", which for granite4.1:3b is
+    #: yes and was worth nothing: it emits a flawless call below ~400
+    #: characters, and above that Ollama's parser for its template returns
+    #: content empty AND tool_calls empty -- three hundred generated tokens
+    #: gone, nothing left to recover. This answers "how much", which is the
+    #: question the work actually asks.
+    native_payload_limit: int | None = UNKNOWN
     #: Can it be driven by the JSON-in-text protocol instead?
     supports_text_tool_protocol: bool | None = UNKNOWN
+    #: The same number for the text protocol, usually far larger because no
+    #: provider-side template parser stands between the tokens and us.
+    text_payload_limit: int | None = UNKNOWN
     structured_output: bool | None = UNKNOWN
     streaming: bool | None = UNKNOWN
     #: Does the server report token counts? Without this, cost is unmeasurable
@@ -105,8 +123,23 @@ class EngineCapabilities:
         'A' native, 'J' JSON-in-text. Not a caller's guess any more: it is a
         property of the engine, and an engine that supports neither is not
         usable and says so rather than failing on turn one.
+
+        "Supports native tools" is necessary and not sufficient. An engine whose
+        native channel loses everything above PAYLOAD_FLOOR cannot write a file
+        through it, so a measured limit below that floor sends it to the text
+        protocol. An UNMEASURED limit changes nothing -- every engine certified
+        before this existed keeps the protocol it was certified with.
         """
-        if self.supports_native_tools:
+        native = bool(self.supports_native_tools)
+        if (native and isinstance(self.native_payload_limit, int)
+                and self.native_payload_limit < PAYLOAD_FLOOR
+                and self.supports_text_tool_protocol):
+            # Measured, not guessed: this engine's native channel cannot carry
+            # what a real edit weighs. Choosing it anyway on the strength of
+            # supports_native_tools alone is exactly the reading that cost
+            # fifty granite runs, every one of them scored as a model failure.
+            return "J"
+        if native:
             return "A"
         if self.supports_text_tool_protocol:
             return "J"

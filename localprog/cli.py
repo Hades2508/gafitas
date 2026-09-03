@@ -368,6 +368,49 @@ def _cmd_retain(args) -> int:
     return 0
 
 
+def _cmd_persist(args) -> int:
+    """MULTI_TURN_TOOL_PERSISTENCE: the gate before an engine costs GPU.
+
+    Deliberately its own command and not part of ``certify``. Certification
+    asks whether an engine can do the SEVEN THINGS a mission needs; this asks
+    the cheaper prior question of whether it can still be asked anything at
+    turn twenty. Running the expensive one first was how fifty granite runs got
+    spent learning it could not.
+    """
+    from . import engine as engine_mod
+    from . import persistence
+    from .provider import OllamaProvider
+
+    out = Path(args.out) if args.out else Path.cwd()
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for name in args.models:
+        caps = engine_mod.capabilities_for(name, probe_if_missing=True)
+        proto = args.protocol or caps.protocol
+        provider = OllamaProvider(name, num_ctx=caps.working_context(),
+                                  num_predict=caps.working_output(),
+                                  timeout=args.timeout)
+        declare = tuple(args.declare) if args.declare else None
+        report = persistence.measure(provider, engine_name=name,
+                                     protocol_name=proto, steps=args.steps,
+                                     mode=args.mode, declare=declare)
+        path = persistence.report_path(
+            out, f"{name}_{proto}_{args.mode}_{report.declared_tools}")
+        path.write_text(json.dumps(report.to_dict(), indent=1, ensure_ascii=False),
+                        encoding="utf-8")
+        rows.append(report)
+        print(f"{name} [{proto}/{args.mode}/{report.declared_tools}t]  "
+              f"valid={report.valid_tool_call_rate:.0%} "
+              f"acceptable={report.acceptable_tool_rate:.0%}  "
+              f"no_call={report.no_tool_call} wrong={report.wrong_tool} "
+              f"invalid={report.invalid_call}  stall={report.stall}  "
+              f"payload_loss={report.payload_loss} objective_loss={report.objective_loss}  "
+              f"recovery={report.recovery}  "
+              f"CAN_DRIVE={report.can_drive_the_loop}  -> {path.name}")
+        print(f"    checkpoints: {report.checkpoints}")
+    return 0 if all(r.can_drive_the_loop for r in rows) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="localprog")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -388,6 +431,19 @@ def main(argv: list[str] | None = None) -> int:
                         "deletion possible.")
     p.add_argument("--apply", action="store_true",
                    help="actually do it. Without this nothing is written or deleted.")
+
+    p = sub.add_parser("persist", help="MULTI_TURN_TOOL_PERSISTENCE probe: can an "
+                                      "engine still drive the loop at turn 20?")
+    p.add_argument("--models", nargs="+", required=True)
+    p.add_argument("--out", default=None)
+    p.add_argument("--steps", type=int, default=20)
+    p.add_argument("--protocol", default=None, choices=["A", "B", "J", "S"])
+    p.add_argument("--mode", default="instructed", choices=["instructed", "goal"],
+                   help="instructed names the call; goal names only what is "
+                        "needed and charges the engine for deciding")
+    p.add_argument("--declare", nargs="*", default=None,
+                   help="restrict the DECLARED tool surface (dispatch is unchanged)")
+    p.add_argument("--timeout", type=float, default=300.0)
 
     p = sub.add_parser("screen", help="Paso 0 (contract §D)")
     p.add_argument("--out", required=True)
@@ -445,7 +501,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return {"selfcheck": cmd_selfcheck, "screen": cmd_screen,
                 "step1": cmd_step1, "work": cmd_work,
-            "retain": _cmd_retain}[args.command](args)
+            "retain": _cmd_retain,
+            "persist": _cmd_persist}[args.command](args)
     except HarnessInvalid as exc:
         print(f"HARNESS_INVALID: {exc.detail}", file=sys.stderr)
         return 3

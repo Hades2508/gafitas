@@ -1,0 +1,305 @@
+"""Recovering a tool call the engine got nearly right, deterministically.
+
+WHAT THIS IS FOR
+----------------
+qwen2.5-coder:3b was recorded as ``supports_native_tools=False`` and scored 0%
+through GAFITAS against 52% answering in one prompt. The payload probe found the
+reason, and it was not the engine:
+
+    prose channel   line_recall 1.00 at 400, 1200 and 3000 characters
+    tool  channel   0 of 3, "no tool call at all"
+
+It reproduces three thousand characters of source perfectly. What it actually
+emitted when asked to do it through ``write_file`` was this::
+
+    {"name": "write_file", "arguments": {"content": "def calcular_impuesto_01(...):
+        \"\"\"Devuelve el impuesto...\"\"\"<RAW NEWLINE>\\n    if exento or base <= 0:
+
+That is a correct tool call, with the correct name, the correct argument and the
+correct payload -- containing two things JSON does not allow inside a string: a
+raw newline, and the docstring's unescaped quotes. Ollama's own parser rejected
+it, so ``message.tool_calls`` came back empty, so the harness reported
+ERROR_NO_TOOL_CALL and threw the whole thing away.
+
+We were not measuring an engine that cannot call tools. We were measuring a
+harness that discards a call for a quoting mistake, fifty times, and then
+concluded the engine was too small.
+
+THE RULES THIS FOLLOWS
+----------------------
+1. **Never invent.** Every tier here either recovers bytes the engine actually
+   emitted or fails. Nothing guesses a path, a tool name or an argument.
+2. **Never repair a call that parsed.** These tiers run only after the ordinary
+   parser has failed, so a well-formed engine can never take this path and can
+   never be changed by it.
+3. **Announce.** A recovered call carries ``repaired`` and the tier that fired.
+   The loop counts them and evidence seals them, because a run that only worked
+   because of repairs is a different fact from a run that did not need any.
+4. **Bounded.** Three tiers, each a fixed deterministic transformation. No
+   model, no heuristic search, no retry.
+
+WHY NOT JUST ASK THE MODEL AGAIN
+--------------------------------
+It was asked again -- that is what the loop's correction feedback does, and it
+is why granite spent 98 turns on this. A retry costs a full generation and
+usually reproduces the same quoting mistake, because the mistake is in how the
+engine escapes, not in what it intended. Repair costs microseconds and is
+deterministic, which also means it can be tested.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+#: Ordered, cheapest first. The name of the tier that succeeded is reported.
+TIER_RAW_CONTROLS = "raw_control_chars"
+TIER_TERMINAL_STRING = "terminal_string"
+TIER_NATIVE_IN_CONTENT = "native_call_in_content"
+TIERS = (TIER_NATIVE_IN_CONTENT, TIER_RAW_CONTROLS, TIER_TERMINAL_STRING)
+
+#: A tool call, whatever the provider called the fields. Both spellings are in
+#: the wild: OpenAI-shaped emitters say "name", our own text protocol says
+#: "tool", and an engine copying an example from its own training says either.
+_NAME_KEYS = ("name", "tool", "function", "tool_name")
+_ARG_KEYS = ("arguments", "args", "parameters", "input")
+
+_CONTROL = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+#: Guard against pathological input. A tool call is small; a megabyte of text
+#: that happens to contain a brace is not one, and scanning it is wasted time.
+MAX_BLOB = 400_000
+
+
+def _escape_raw_controls(blob: str) -> str:
+    """Escape literal newlines/tabs that appear INSIDE a JSON string.
+
+    Tracks string state exactly, so control characters in the JSON's own
+    formatting -- the newlines between keys -- are left alone. This is the
+    common half of the defect and it is unambiguous: a raw newline inside a
+    JSON string is never legal, so escaping it cannot change a valid document.
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in blob:
+        if escaped:
+            out.append(ch)
+            escaped = False
+            continue
+        if in_string and ch == "\\":
+            out.append(ch)
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            out.append(ch)
+            continue
+        if in_string and ch in _CONTROL:
+            out.append(_CONTROL[ch])
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+def _terminal_string(blob: str) -> Any:
+    """Recover an object whose LAST string value contains unescaped quotes.
+
+    Unescaped quotes are ambiguous in general: nothing distinguishes a quote
+    that ends a string from one that belongs inside it. This tier does not try
+    to resolve that in general. It resolves the one case where the structure
+    settles it -- the value is the last thing in the object, so its closing
+    quote is the last quote before the closing braces, and everything between
+    the two is the payload.
+
+    That is exactly the shape a tool call takes when the payload is source code
+    with a docstring in it, which is the case that was destroying whole runs. If
+    the blob is any other shape this returns None rather than guessing.
+
+    The payload is spliced back in re-escaped, rather than the object being
+    reassembled around it: the value is usually nested inside ``arguments``, and
+    rebuilding the object would have to know where it belonged. Splicing does
+    not need to know.
+    """
+    tail = re.search(r'"[\s}\]]*$', blob)
+    if tail:
+        close_at = tail.start()
+    elif blob.rstrip() and blob.rstrip()[-1] not in "}]":
+        # No closing quote anywhere: the generation was cut off mid-payload
+        # (num_predict ran out), so the payload runs to the end and there is no
+        # trailing prose to mistake for it -- a truncated generation stops, it
+        # does not go on to say something else. A blob that DOES close its
+        # braces is a different failure and is left alone rather than guessed at.
+        close_at = len(blob)
+    else:
+        return None
+
+    opens = [m for m in re.finditer(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*"', blob)
+             if m.end() <= close_at]
+    if not opens:
+        return None
+    last = opens[-1]
+
+    value = _unescape(blob[last.end():close_at])
+    # When the payload ran to the end there is no closing quote to keep, so one
+    # is supplied along with the braces below. json.dumps gives the escaping;
+    # its own surrounding quotes are stripped because the opening one is already
+    # in `blob[:last.end()]`.
+    closing = blob[close_at:] if tail else '"'
+    spliced = blob[:last.end()] + json.dumps(value)[1:-1] + closing
+    spliced = _escape_raw_controls(spliced)
+    # A generation cut off mid-object leaves braces unclosed, and the quote that
+    # swallowed them is precisely what we just repaired. Closing up to three is
+    # enough for {"name":..,"arguments":{..}} and small enough that it cannot
+    # turn unrelated text into an object.
+    for extra in range(4):
+        parsed = _try(json.loads, spliced + "}" * extra)
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\",
+            "/": "/", "b": "\b", "f": "\f"}
+
+
+def _unescape(raw: str) -> str:
+    out: list[str] = []
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\\" and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            if nxt in _ESCAPES:
+                out.append(_ESCAPES[nxt])
+                i += 2
+                continue
+            if nxt == "u" and i + 5 < len(raw):
+                try:
+                    out.append(chr(int(raw[i + 2:i + 6], 16)))
+                    i += 6
+                    continue
+                except ValueError:
+                    pass
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _balanced_objects(text: str) -> list[str]:
+    """Every top-level ``{...}`` in *text*, brace-balanced outside strings."""
+    blobs: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                blobs.append(text[start:i + 1])
+                start = -1
+            elif depth < 0:
+                depth = 0
+    if depth > 0 and start >= 0:
+        # An unterminated object: the generation was cut off, or a quote inside
+        # the payload swallowed the closing brace. Take the rest and let the
+        # tiers decide -- _terminal_string will reject it if it is not a tool
+        # call, and nothing downstream trusts it before it parses.
+        blobs.append(text[start:])
+    return blobs
+
+
+def _as_call(obj: Any) -> tuple[str, dict] | None:
+    if not isinstance(obj, dict):
+        return None
+    # An OpenAI-shaped call nests the real thing under "function".
+    fn = obj.get("function")
+    if isinstance(fn, dict) and any(k in fn for k in _NAME_KEYS):
+        obj = fn
+    name = next((obj[k] for k in _NAME_KEYS
+                 if isinstance(obj.get(k), str) and obj[k].strip()), None)
+    if not name:
+        return None
+    args: Any = next((obj[k] for k in _ARG_KEYS if k in obj), {})
+    if isinstance(args, str):
+        # Some emitters put the arguments back into a JSON string. Two tiers
+        # deep is where this stops: if that string is also broken, it stays
+        # broken.
+        try:
+            args = json.loads(args)
+        except ValueError:
+            try:
+                args = json.loads(_escape_raw_controls(args))
+            except ValueError:
+                return None
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        return None
+    return name.strip(), args
+
+
+def recover(content: str, *, known_tools: frozenset[str] | None = None
+            ) -> tuple[str, dict, str] | None:
+    """Best effort at the call *content* was trying to be, or None.
+
+    Returns ``(name, arguments, tier)``. ``known_tools``, when given, is a
+    correctness gate and not a rescue: a recovered name that is not a real tool
+    is rejected, so this can never manufacture a call the harness would then
+    have to reject anyway with a worse error message.
+    """
+    if not isinstance(content, str) or not content.strip():
+        return None
+    if len(content) > MAX_BLOB:
+        content = content[:MAX_BLOB]
+
+    candidates = _balanced_objects(content)
+    # Unescaped quotes inside the payload desynchronise the brace scanner: it
+    # can mistake `"arguments": {` for the start of a new top-level object and
+    # hand back a fragment. So the whole text from the first brace is tried too,
+    # last and least precise. It costs one more parse attempt and it is the only
+    # candidate that survives a payload whose quoting broke the scan itself.
+    first = content.find("{")
+    if first >= 0 and content[first:] not in candidates:
+        candidates.append(content[first:])
+
+    for blob in candidates:
+        for tier, candidate in (
+            (TIER_NATIVE_IN_CONTENT, _try(json.loads, blob)),
+            (TIER_RAW_CONTROLS, _try(json.loads, _escape_raw_controls(blob))),
+            (TIER_TERMINAL_STRING, _terminal_string(blob)),
+        ):
+            if candidate is None:
+                continue
+            call = _as_call(candidate)
+            if call is None:
+                continue
+            name, args = call
+            if known_tools is not None and name not in known_tools:
+                continue
+            return name, args, tier
+    return None
+
+
+def _try(fn, *args):
+    try:
+        return fn(*args)
+    except ValueError:
+        return None

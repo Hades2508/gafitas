@@ -22,6 +22,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from . import repair
 from .errors import ERROR_BAD_ARGUMENTS, ERROR_FORMAT, ERROR_NO_TOOL_CALL, InvalidCall
 
 MARKER = "LLAMADA:"
@@ -33,6 +34,10 @@ _CLOSE = {v: k for k, v in _OPEN.items()}
 class ParsedCall:
     name: str
     arguments: Any  # dict, or the raw form for tools.normalise_arguments to coerce
+    #: Which repair tier reassembled this call, or None if it parsed cleanly.
+    #: Never None-by-omission: a caller that ignores it is reading a clean call
+    #: and a repaired one as the same event, and they are not the same event.
+    repaired: str | None = None
 
 
 # ------------------------------------------------------------------ scanning
@@ -173,6 +178,14 @@ def parse_native_call(message: dict) -> ParsedCall:
     """Pull the first tool call out of a native-protocol message."""
     calls = message.get("tool_calls") if isinstance(message, dict) else None
     if not calls or not isinstance(calls, list):
+        # The provider found no call. That is not the same as the engine not
+        # having emitted one: qwen2.5-coder:3b emits a correct
+        # {"name": ..., "arguments": {...}} into `content`, and Ollama's parser
+        # drops it when the payload's quoting breaks the JSON. Look before
+        # concluding there was nothing there.
+        recovered = _recover(message)
+        if recovered is not None:
+            return recovered
         raise InvalidCall(
             ERROR_NO_TOOL_CALL,
             "no emitiste ninguna llamada de herramienta, solo texto. El texto de "
@@ -282,11 +295,33 @@ def parse_json_call(content: str) -> ParsedCall:
             arguments = {k: v for k, v in parsed.items()
                          if k not in ("tool", "name", "function", "args", "arguments")}
         return ParsedCall(name=name, arguments=arguments)
+    recovered = _recover({"content": content})
+    if recovered is not None:
+        return recovered
     raise InvalidCall(
         ERROR_FORMAT,
         'no encontre una llamada valida. Responde con un bloque ```json que '
         'contenga {"tool": "<nombre>", "arguments": {...}} y nada mas.',
     )
+
+
+def _recover(message: Any) -> ParsedCall | None:
+    """Last resort before declaring there was no call, for every protocol.
+
+    ``known_tools`` is passed so a recovered name that is not a real tool is
+    rejected here rather than surfacing as a worse error later. The import is
+    local because tools imports protocol.
+    """
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        return None
+    from .tools import SPECS
+
+    found = repair.recover(content, known_tools=frozenset(SPECS))
+    if found is None:
+        return None
+    name, arguments, tier = found
+    return ParsedCall(name=name, arguments=arguments, repaired=tier)
 
 
 def parse(protocol: str, message: dict) -> ParsedCall:
