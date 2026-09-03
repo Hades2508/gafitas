@@ -18,6 +18,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import runstate
 from .errors import HarnessInvalid
 
 GIT_TIMEOUT = 120.0
@@ -50,11 +51,22 @@ class Workspace:
             "commit": self.commit, "preserved": self.preserved, "disposed": self.disposed,
         }
 
-    def dispose(self, *, preserve: bool) -> None:
-        """Remove the box, or keep it and say so. Idempotent."""
+    def dispose(self, *, preserve: bool, ticket: str = "",
+                outcome: str = "", pinned: bool = False) -> None:
+        """Remove the box, or keep it and say so. Idempotent.
+
+        A preserved box is now MARKED with what it is (A1). Preserving without
+        recording why is not a policy: this machine accumulated 920 of them
+        holding 816 MB, and nothing could tell an ordinary failure apart from
+        evidence that must never be deleted. ``runstate.retain`` refuses to
+        touch anything unmarked or pinned, so the marker is what makes a
+        retention policy safe rather than the policy itself.
+        """
         if self.disposed:
             return
         if preserve:
+            runstate.mark_preserved(self.path, ticket=ticket, outcome=outcome,
+                                    pinned=pinned)
             self.preserved = True
             self.disposed = True
             return

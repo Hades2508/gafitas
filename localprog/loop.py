@@ -17,6 +17,7 @@ Outcome is a closed set:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections import Counter
@@ -128,6 +129,8 @@ class LoopResult:
     provider_error: dict | None = None
     harness_invalid: dict | None = None
     events: list[dict] = field(default_factory=list)
+    #: sha256 -> the full text of any tool argument too long for the event (A2).
+    payloads: dict = field(default_factory=dict)
 
     @property
     def scoreable(self) -> bool:
@@ -277,8 +280,15 @@ def _repeat_note(count: int, tool_name: str) -> str:
 EVENT_ARG_CHARS = 300
 
 
-def _event_args(arguments: Any) -> Any:
+def _event_args(arguments: Any, sidecar: dict | None = None) -> Any:
     """The call's arguments, small enough to keep for every turn of every run.
+
+    A long value is truncated in the event AND kept whole in *sidecar*, keyed by
+    the sha256 of its content (A2). Truncation alone made ``write_file`` bodies
+    unrecoverable, which blocked two analyses in the campaign that found it: the
+    only way to tell a correct copy from an over-copy is to read what was
+    written, and the evidence had thrown it away to save space. A hash plus a
+    sidecar costs the same space per DISTINCT payload and nothing per repeat.
 
     ``evidence.py`` has said since it was written that every tool call and *its
     arguments* are sealed. The arguments were never actually recorded, and the
@@ -288,17 +298,23 @@ def _event_args(arguments: Any) -> Any:
     transcript without the queries cannot answer the one question a retrieval
     audit asks.
     """
+    def keep(text: str) -> Any:
+        if len(text) <= EVENT_ARG_CHARS:
+            return text
+        digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+        if sidecar is not None:
+            sidecar[digest] = text
+        return {"truncated": text[:EVENT_ARG_CHARS], "chars": len(text),
+                "sha256": digest}
+
     if not isinstance(arguments, dict):
-        text = str(arguments)
-        return text[:EVENT_ARG_CHARS] + ("..." if len(text) > EVENT_ARG_CHARS else "")
+        return keep(str(arguments))
     out: dict[str, Any] = {}
     for key, value in arguments.items():
         if isinstance(value, (int, float, bool)) or value is None:
             out[key] = value
             continue
-        text = value if isinstance(value, str) else repr(value)
-        out[key] = (text[:EVENT_ARG_CHARS] + f"...(+{len(text) - EVENT_ARG_CHARS} chars)"
-                    if len(text) > EVENT_ARG_CHARS else text)
+        out[key] = keep(value if isinstance(value, str) else repr(value))
     return out
 
 
@@ -398,6 +414,7 @@ def run_loop(
     used: Counter = Counter()
     signatures: Counter = Counter()
     events: list[dict] = []
+    payloads: dict[str, str] = {}
     started = time.perf_counter()
     last_call_was_finish = False
     consecutive_dead = 0
@@ -502,7 +519,7 @@ def run_loop(
                 transcript.add(Turn(number=turn, assistant=assistant,
                                     tool_name=outcome.name, tool_payload=annotated))
                 events.append({"turn": turn, "tool": outcome.name, "ok": True,
-                               "args": _event_args(call.arguments),
+                               "args": _event_args(call.arguments, payloads),
                                "seen_at": seen_at,
                                "result_chars": len(payload),
                                "repeat_count": repeat_count,
@@ -559,7 +576,7 @@ def run_loop(
                 is_error=True,
             ))
             events.append({"turn": turn, "tool": outcome.name, "ok": False,
-                           "args": _event_args(call.arguments),
+                           "args": _event_args(call.arguments, payloads),
                            "code": outcome.code, "invalid_call": outcome.invalid_call,
                            "prompt_tokens": turn_input})
             last_call_was_finish = outcome.name == "finish"
@@ -578,4 +595,5 @@ def run_loop(
     result.tests_green = ctx.tests_green
     result.elisions = max(result.elisions, transcript.elisions)
     result.events = events
+    result.payloads = payloads
     return result

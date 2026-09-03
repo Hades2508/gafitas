@@ -136,10 +136,33 @@ def test_the_evidence_records_what_was_actually_searched_for(ctx):
     assert first["args"]["context"] == 2
 
 
-def test_a_huge_argument_is_truncated_rather_than_sealed_whole(ctx):
-    body = "x = 1\n" * 500
+def test_a_huge_argument_is_hashed_and_kept_whole_in_a_sidecar(ctx):
+    """A2. Truncation alone made write_file bodies unrecoverable, and that
+    blocked two analyses in the campaign that found it: the only way to tell a
+    correct copy from an over-copy is to read what was written, and the
+    evidence had thrown it away to save space. A hash plus a sidecar costs the
+    same space per DISTINCT payload and nothing per repeat."""
+    body = "x = 1" + chr(10) + "z = 2" + chr(10)
+    body = body * 300
     result, _ = drive(ctx, [tc("write_file", path="pkg/big.py", content=body),
                             tc("finish", summary="x", status="BLOCKED")])
     sealed = result.events[0]["args"]["content"]
-    assert len(sealed) < len(body)
-    assert "chars)" in sealed
+    assert isinstance(sealed, dict)
+    assert sealed["chars"] == len(body)
+    assert len(sealed["truncated"]) < len(body), "the event itself stays small"
+    assert result.payloads[sealed["sha256"]] == body, "the whole thing survives"
+
+
+def test_a_short_argument_is_still_just_the_string(ctx):
+    result, _ = drive(ctx, [tc("grep", pattern="alpha"),
+                            tc("finish", summary="x", status="BLOCKED")])
+    assert result.events[0]["args"]["pattern"] == "alpha"
+    assert result.payloads == {}, "no sidecar for something that fits"
+
+
+def test_the_same_payload_twice_is_stored_once(ctx):
+    body = ("y = 2" + chr(10)) * 300
+    result, _ = drive(ctx, [tc("write_file", path="pkg/one.py", content=body),
+                            tc("write_file", path="pkg/two.py", content=body),
+                            tc("finish", summary="x", status="BLOCKED")])
+    assert len(result.payloads) == 1

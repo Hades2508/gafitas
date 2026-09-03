@@ -77,7 +77,18 @@ def seal(
     transcript: dict[str, Any] | None = None,
     events: list | None = None,
     diff_text: str = "",
+    payloads: dict[str, str] | None = None,
 ) -> Path:
+    """Seal one run. ``payloads`` maps sha256 -> the full text of any tool
+    argument too long to sit in an event (A2).
+
+    Kept in a sibling directory rather than inline: the events file stays
+    readable, a payload repeated across turns is stored once, and the thing that
+    actually got written to disk is recoverable months later. Truncating and
+    keeping nothing else is how two analyses in this project ran aground -- the
+    only way to tell a correct copy from an over-copy is to read what was
+    written.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": SCHEMA,
@@ -89,7 +100,23 @@ def seal(
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     if diff_text:
         (directory / f"{name}.diff").write_text(diff_text, encoding="utf-8")
+    if payloads:
+        store = directory / "payloads"
+        store.mkdir(parents=True, exist_ok=True)
+        for digest, text in payloads.items():
+            target = store / f"{digest}.txt"
+            if not target.exists():          # identical content, written once
+                target.write_text(text, encoding="utf-8")
     return path
+
+
+def read_payload(directory: Path, digest: str) -> str | None:
+    """The full text behind an event's ``sha256``, or None if it is not here."""
+    target = Path(directory) / "payloads" / f"{digest}.txt"
+    try:
+        return target.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def harness_invalid_notice(directory: Path, *, runs: list[dict]) -> Path:

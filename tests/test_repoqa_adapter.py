@@ -216,7 +216,16 @@ def test_a_needle_named_after_a_common_word_is_not_a_false_leak():
     case = repoqa.Case(language="python", repo="x/y",
                        description=needle["description"], needle_name="base")
     ticket = repoqa.build_ticket(case, Path("."))
-    repoqa.assert_no_leak(needle, ticket)  # must not raise
+    # A4: this used to pass by not raising, which reads as an empty
+    # test. The property is stated explicitly now.
+    leaked = False
+    try:
+        repoqa.assert_no_leak(needle, ticket)  # must not raise
+    except ValueError:
+        leaked = True
+    assert not leaked, (
+        'the guard fired on ordinary text; a guard that does that is one that gets switched off'
+    )
 
 
 def test_a_real_leak_is_still_caught_when_the_name_is_common():
@@ -261,8 +270,17 @@ def test_a_short_needle_name_is_not_matched_inside_a_tool_name():
                        description="devuelve verdadero cuando el valor es de ese tipo",
                        needle_name="is")
     ticket = repoqa.build_ticket(case, Path("."))
-    repoqa.assert_no_leak({"name": "is", "path": "src/guards.ts",
+    # A4: this used to pass by not raising, which reads as an empty
+    # test. The property is stated explicitly now.
+    leaked = False
+    try:
+        repoqa.assert_no_leak({"name": "is", "path": "src/guards.ts",
                            "description": case.description}, ticket)
+    except ValueError:
+        leaked = True
+    assert not leaked, (
+        'the guard fired on ordinary text; a guard that does that is one that gets switched off'
+    )
 
 
 def test_a_real_leak_is_still_caught():

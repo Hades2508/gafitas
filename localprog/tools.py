@@ -436,11 +436,27 @@ def _check_writable(ctx: ToolContext, rel: str, *, creating: bool) -> None:
     """
     if not ctx.scope.allows(rel, creating=creating):
         verb = "crear" if creating else "modificar"
+        # A3. Scope matching is case-SENSITIVE on purpose: Windows is not, and a
+        # containment rule that behaves differently on two machines is not a
+        # containment rule. scope.py argues that at length and it stays.
+        #
+        # What was missing is that the refusal was undiagnosable. On Windows
+        # 'PKG/a.py' and 'pkg/a.py' are the same file, so an agent that varied
+        # the case got "outside write_scope" for a path that is plainly inside
+        # it, with no way to see why. The rule does not move; it now says which
+        # of the two things went wrong.
+        hint = ""
+        if ctx.scope.allows(rel.lower(), creating=creating) or \
+                ctx.scope.allows(rel.upper(), creating=creating):
+            hint = (f"\n  OJO: {rel.lower()!r} SI estaria dentro del ambito. La "
+                    f"diferencia es solo de mayusculas/minusculas, y el ambito "
+                    f"las distingue a proposito para que se comporte igual en "
+                    f"Windows y en Linux. Escribe la ruta como esta en el disco.")
         raise ToolError(
             ERROR_NOT_IN_WRITE_SCOPE,
             f"no puedes {verb} {rel!r}: esta fuera de write_scope." \
             f"\n  Ambito de escritura: {ctx.scope.describe(creating=creating)}" \
-            f"\n  (un ambito que acaba en '/' incluye todo lo que hay debajo)",
+            f"\n  (un ambito que acaba en '/' incluye todo lo que hay debajo)" + hint,
         )
 
 

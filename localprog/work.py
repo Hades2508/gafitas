@@ -558,11 +558,17 @@ def run_ticket(
 
         patch = _make_patch(box.path, changed)
         result.wall_seconds = time.perf_counter() - started
-        result.patch_path = _seal(out_dir, ticket, result, outcome.events, patch)
+        result.patch_path = _seal(out_dir, ticket, result, outcome.events, patch,
+                                  payloads=getattr(outcome, "payloads", None))
         preserve = result.outcome not in (PASS, PASS_UNCONFIRMED, CANDIDATE)
         return result
     finally:
-        box.dispose(preserve=preserve)
+        # A1: a preserved box records WHAT it is, so a retention policy can tell
+        # an ordinary failure from evidence that must never be deleted. Anything
+        # our own defect produced is pinned and exempt from every budget.
+        box.dispose(preserve=preserve, ticket=ticket.ticket_id,
+                    outcome=result.outcome,
+                    pinned=result.outcome in (HARNESS_INVALID, PROVIDER_ERROR))
         result.workspace = box.describe()
 
 
@@ -601,7 +607,8 @@ def _make_patch(root: Path, changed) -> str:
 
 
 def _seal(out_dir: Path | None, ticket: Ticket, result: WorkResult,
-          events: list, patch: str) -> str | None:
+          events: list, patch: str,
+          payloads: dict[str, str] | None = None) -> str | None:
     if out_dir is None:
         return None
     target = Path(out_dir) / "tickets"
@@ -624,6 +631,18 @@ def _seal(out_dir: Path | None, ticket: Ticket, result: WorkResult,
         ),
         encoding="utf-8",
     )
+    # A2: any tool argument too long for its event is kept whole here, keyed by
+    # the sha256 the event records. One file per DISTINCT payload, so a body
+    # written twice costs nothing the second time, and what actually reached the
+    # disk stays readable long after the workspace is gone.
+    if payloads:
+        store = target / "payloads"
+        store.mkdir(parents=True, exist_ok=True)
+        for digest, text in payloads.items():
+            body = store / f"{digest}.txt"
+            if not body.exists():
+                body.write_text(text, encoding="utf-8")
+
     patch_path = None
     if patch and patch != "(sin cambios)":
         patch_file = target / f"{stem}.patch"
