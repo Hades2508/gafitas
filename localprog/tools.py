@@ -621,9 +621,10 @@ def grep(ctx: ToolContext, pattern: Any, glob: Any = "**/*.py", context: Any = 0
             f"Afina el patron, restringe el glob, o baja context]"
         )}
     if not hits:
-        return {"hits": [], "searched": searched,
+        return {"hits": [], "searched": searched, "matched_files": 0,
                 "note": _empty_grep_note(ctx, pattern, glob, searched, ignore_case)}
-    return {"hits": hits, "searched": searched}
+    matched_files = len(set(hit['file'] for hit in hits))
+    return {"hits": hits, "searched": searched, "matched_files": matched_files}
 
 
 def _match_distribution(ctx: ToolContext, rx, candidates, *, seen: int) -> dict:
