@@ -142,6 +142,13 @@ class ToolContext:
     allowed_new_files: tuple[str, ...] = ()
     acceptance_tests: tuple[str, ...] = ()
     changed_files: set[str] = field(default_factory=set)
+    #: (path, symbol) of the harness's own top-ranked candidate for this
+    #: mission, computed deterministically at turn zero from the same index the
+    #: objective's shortlist uses. Carried so a refusal can name the exact call
+    #: rather than a kind of call -- the difference F-82 measured at 95% against
+    #: 7%, and the reason qwen2.5-coder:3b called finish twenty times against a
+    #: message that described write_file in prose.
+    opening_candidate: tuple[str, str] | None = None
     #: How many times each path has been written, and whether anything was
     #: learned since the last one. Two of the reference engine's first eleven
     #: post-F-75 runs wrote their answer six and nine times, at 17 and 20 turns;
@@ -2073,9 +2080,23 @@ def finish(ctx: ToolContext, summary: Any = None, status: Any = "DONE") -> str:
         if pending:
             wanted = (
                 f"\n  ESTA MISION ESPERA QUE CREES: {', '.join(pending[:4])}. "
-                f"Todavia no existe.\n"
-                f"  Para crearlo: write_file(path='{pending[0]}', content=<el texto "
-                f"entero>). El contenido va en el argumento, no en tu respuesta."
+                f"Todavia no existe."
+            )
+            if ctx.opening_candidate:
+                # The harness ranked this at turn zero and it is already in the
+                # objective. Naming the CALL beats naming a tool: qwen2.5-coder
+                # :3b called finish twenty times in a row against a message that
+                # described write_file in prose. And the ablation measured what
+                # naming the copy is worth -- without the turn-zero shortlist
+                # granite falls from 60% to 20%, reach 29/50 to 9/50.
+                src, symbol = ctx.opening_candidate
+                wanted += (f"\n  Si la respuesta ya esta en el repositorio, "
+                           f"copiala sin reescribirla: copy_code(src='{src}', "
+                           f"into='{pending[0]}', name='{symbol}').")
+            wanted += (
+                f"\n  Si tienes que escribirla tu: write_file(path='{pending[0]}', "
+                f"content=<el texto entero>). El contenido va en el argumento, "
+                f"no en tu respuesta."
             )
         elif ctx.write_scope:
             wanted = (f"\n  Puedes escribir en: {', '.join(ctx.write_scope[:4])}. "

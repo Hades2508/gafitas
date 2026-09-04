@@ -464,6 +464,11 @@ def run_ticket(
             write_scope=ticket.write_scope,
             allowed_new_files=ticket.allowed_new_files,
             acceptance_tests=ticket.acceptance_tests,
+            # The harness's own top-ranked candidate, computed once, so a
+            # refusal can name the exact call instead of a kind of call. The
+            # ablation measured what naming the copy is worth: without the
+            # turn-zero shortlist granite falls from 60% to 20%.
+            opening_candidate=orient.top_candidate(box.path, ticket.objective),
             # F-38: hand the agent the same baseline the conscience will use,
             # so "you broke something" can be said during the run rather than
             # discovered afterwards and charged to it.

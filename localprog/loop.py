@@ -55,6 +55,15 @@ OUTCOMES = (FINISHED, BUDGET_EXHAUSTED, STALLED, PROVIDER_ERROR, HARNESS_INVALID
 #: feedback usually fixes on the next turn) from a wedged conversation.
 STALL_THRESHOLD = 3
 
+#: Identical FAILING calls before the run is declared stalled. Deliberately
+#: looser than the dead-turn threshold: three dead turns is a stall because
+#: nothing happened at all, whereas a failing call is at least an attempt, and
+#: the reference engine legitimately retries an edit two or three times after
+#: re-reading. Six identical failures is not a retry -- qwen2.5-coder:3b spent
+#: TWENTY turns on one refused finish() and the run was sealed BUDGET_EXHAUSTED,
+#: which is not what happened to it.
+REPEAT_STALL_THRESHOLD = 6
+
 #: A call signature seen this many times is a loop, per contract §D.5.
 LOOP_THRESHOLD = 3
 
@@ -620,6 +629,19 @@ def run_loop(
                            "code": outcome.code, "invalid_call": outcome.invalid_call,
                            "prompt_tokens": turn_input})
             last_call_was_finish = outcome.name == "finish"
+            if error_repeat >= REPEAT_STALL_THRESHOLD:
+                # STALLED already means "asking again produces the same fact",
+                # and it was wired only to turns that produced NO call at all --
+                # so a call failing identically forever was invisible to it. A
+                # ToolError is not a dead turn by the loop's definition, and
+                # qwen2.5-coder:3b spent TWENTY turns on one refused finish()
+                # while the run was sealed as BUDGET_EXHAUSTED, which is not
+                # what happened to it.
+                result.outcome = STALLED
+                result.stalled_after = turn
+                events.append({"turn": turn, "stalled_on_repeat": error_repeat,
+                               "tool": outcome.name, "code": outcome.code})
+                break
 
     except HarnessInvalid as exc:
         result.outcome = HARNESS_INVALID

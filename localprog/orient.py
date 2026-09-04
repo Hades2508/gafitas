@@ -165,3 +165,24 @@ def opening_candidates(root: Path, objective: str, *,
                      f"name={top.name!r}).")
     lines.append("  Para buscar otra cosa: search_code(query=...).")
     return "\n".join(lines)
+
+
+def top_candidate(root: Path, objective: str) -> tuple[str, str] | None:
+    """The single highest-ranked (path, symbol) for this objective, or None.
+
+    The same computation opening_candidates does, exposed on its own so a
+    refusal can name the exact call. Errors that name a CATEGORY of action are
+    what F-82 measured at 7% against 95%, and qwen2.5-coder:3b called finish
+    twenty times in a row against a message that described write_file in prose.
+    """
+    text = (objective or "").strip()
+    if len(text) < 40:
+        return None
+    try:
+        rows = retrieval.Index(root).search(text, limit=1)
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not rows:
+        return None
+    region, _score = rows[0]
+    return (region.path, region.name or "")
