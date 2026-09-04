@@ -61,6 +61,12 @@ REGISTRY = Path(__file__).resolve().parent.parent / "ENGINES.json"
 CONSERVATIVE_CONTEXT = 8192
 CONSERVATIVE_OUTPUT = 1024
 
+#: Keys under which a server returns an engine's reasoning separately from its
+#: answer. Checked as a set of observed field names rather than by engine name,
+#: because that is what the property IS -- and a new key here is a deployment
+#: fact, not a model rule.
+REASONING_KEYS = ("thinking", "reasoning", "reasoning_content")
+
 #: The payload a real mission asks a tool to carry, in characters. The median
 #: RepoQA needle body is around 1200 and a source edit is routinely larger, so
 #: an engine that cannot push a kilobyte through its native channel is better
@@ -110,6 +116,12 @@ class EngineCapabilities:
     #: The same number for the text protocol, usually far larger because no
     #: provider-side template parser stands between the tokens and us.
     text_payload_limit: int | None = UNKNOWN
+    #: Whether the server returns this engine's reasoning in a channel of its
+    #: own, separate from the answer. Observed, never inferred from the name.
+    #: It changes the output budget and nothing else: an engine that thinks
+    #: out loud must be able to afford the thought AND the call, and
+    #: granite4.2:3b lost 70% of its turns to a budget that only covered one.
+    emits_reasoning_channel: bool | None = UNKNOWN
     structured_output: bool | None = UNKNOWN
     streaming: bool | None = UNKNOWN
     #: Does the server report token counts? Without this, cost is unmeasurable
@@ -185,9 +197,21 @@ class EngineCapabilities:
         spends the run being truncated. The quarter is a bound, not a tuning
         knob: it exists so an engine with a small window degrades instead of
         breaking.
+
+        An engine that returns its reasoning in a channel of its own pays for
+        that reasoning out of the same budget as the call, so the conservative
+        fallback stops being conservative and becomes a gag. granite4.2:3b spent
+        a median 974 of its 1024 tokens thinking and returned empty content in
+        170 of 242 turns. Where the engine DECLARES a limit that limit is still
+        obeyed -- this only replaces the harness's own guess (F-95).
         """
         ceiling = max(self.working_context() // 4, 256)
-        return min(self.max_output_tokens or CONSERVATIVE_OUTPUT, ceiling)
+        if self.max_output_tokens:
+            return min(self.max_output_tokens, ceiling)
+        floor = CONSERVATIVE_OUTPUT
+        if self.emits_reasoning_channel:
+            floor = ceiling
+        return min(floor, ceiling)
 
     def to_dict(self) -> dict:
         out = asdict(self)
@@ -269,6 +293,7 @@ def probe(model: str, *, chat_url: str = DEFAULT_CHAT_URL,
 
     native = False
     usage = False
+    reasoning = False
     try:
         body = _post(chat_url, {
             "model": model,
@@ -281,6 +306,7 @@ def probe(model: str, *, chat_url: str = DEFAULT_CHAT_URL,
         message = (body or {}).get("message") or {}
         native = bool(message.get("tool_calls"))
         usage = isinstance(body.get("eval_count"), int)
+        reasoning = any(str(message.get(key) or "").strip() for key in REASONING_KEYS)
         if not native and message.get("content"):
             constraints.append(
                 "handed a tool schema it answered in prose: native tool calls "
@@ -314,6 +340,7 @@ def probe(model: str, *, chat_url: str = DEFAULT_CHAT_URL,
         name=model,
         context_window=window,
         served_context=num_ctx,   # what we just proved it will accept
+        emits_reasoning_channel=reasoning,
 
         max_output_tokens=UNKNOWN,          # declared per campaign, never guessed
         supports_native_tools=native,

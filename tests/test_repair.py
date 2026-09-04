@@ -178,3 +178,72 @@ def test_recovery_stays_linear_in_the_size_of_the_input():
     start = time.perf_counter()
     repair.recover("{}" * 20_000, known_tools=KNOWN)
     assert time.perf_counter() - start < 5.0
+
+
+# ------------------------------------------- F-92: Python literals, and the
+#                                             prose that used to eat an argument
+
+def test_a_python_literal_object_is_recovered_not_mangled():
+    """``True``/``False``/``None`` are what a Python-trained model writes.
+
+    json.loads rejects all three, so every one of these calls fell through to
+    ``_terminal_string`` -- which is built for a different failure and glued the
+    rest of the object onto the last argument it could see. ministral-3:3b did
+    this in 28 of 50 runs of the expansion cohort.
+    """
+    content = ('```json\n{"tool": "grep", "arguments": {"pattern": "def is_valid", '
+               '"context": 3, "ignore_case": True}}\n```\n\n*(nota del modelo)*')
+    name, args, tier = repair.recover(content, known_tools=KNOWN)
+    assert (name, tier) == ("grep", repair.TIER_PYTHON_LITERAL)
+    assert args == {"pattern": "def is_valid", "context": 3, "ignore_case": True}
+
+
+def test_a_python_none_does_not_swallow_the_rest_of_the_call():
+    """The read that this reproduces came back with the whole tail of the
+    object, closing fence included, glued onto ``path``."""
+    content = ('```json\n{"tool": "read_file", "arguments": '
+               '{"path": "src/core/vdom.py", "start": 135, "end": None}}\n```')
+    name, args, _ = repair.recover(content, known_tools=KNOWN)
+    assert name == "read_file"
+    assert args["path"] == "src/core/vdom.py"
+    assert args["start"] == 135 and args["end"] is None
+
+
+def test_single_quoted_python_dict_is_recovered():
+    content = "{'tool': 'read_symbol', 'arguments': {'path': 'a/b.py', 'name': 'foo'}}"
+    name, args, tier = repair.recover(content, known_tools=KNOWN)
+    assert (name, tier) == ("read_symbol", repair.TIER_PYTHON_LITERAL)
+    assert args == {"path": "a/b.py", "name": "foo"}
+
+
+def test_text_after_a_closed_object_is_never_taken_for_a_truncated_payload():
+    """The guard itself, with no Python literal involved.
+
+    A complete object followed by prose used to hit the cut-off-generation
+    branch, because that branch only asked whether the blob ENDED in a brace. A
+    truncated generation stops; it does not close its braces and keep writing.
+    """
+    content = ('{"tool": "finish", "arguments": {"summary": "he dicho \\"listo\\" ya", '
+               '"status": "DONE"}}\n```\n\nY ahora explico por que.')
+    got = repair.recover(content, known_tools=KNOWN)
+    assert got is not None
+    _, args, _ = got
+    assert args["status"] == "DONE", "status swallowed the tail of the object"
+
+
+def test_a_genuinely_truncated_payload_is_still_recovered():
+    """The branch the guard narrows must keep doing its own job."""
+    content = ('{"tool": "write_file", "arguments": {"path": "OUT.txt", '
+               '"content": "def f():\n    return 1')
+    name, args, tier = repair.recover(content, known_tools=KNOWN)
+    assert (name, tier) == ("write_file", repair.TIER_TERMINAL_STRING)
+    assert args["content"] == "def f():\n    return 1"
+
+
+def test_python_literal_tier_cannot_execute_anything():
+    """``ast.literal_eval`` is the whole tier precisely because it refuses
+    names, calls and imports rather than evaluating them."""
+    for hostile in ('{"tool": __import__("os").system("echo no")}',
+                    '{"tool": open("/etc/passwd").read()}',
+                    '{"tool": 1+1}'):
+        assert repair._python_literal(hostile) is None

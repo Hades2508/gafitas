@@ -35,7 +35,7 @@ THE RULES THIS FOLLOWS
 3. **Announce.** A recovered call carries ``repaired`` and the tier that fired.
    The loop counts them and evidence seals them, because a run that only worked
    because of repairs is a different fact from a run that did not need any.
-4. **Bounded.** Three tiers, each a fixed deterministic transformation. No
+4. **Bounded.** Four tiers, each a fixed deterministic transformation. No
    model, no heuristic search, no retry.
 
 WHY NOT JUST ASK THE MODEL AGAIN
@@ -49,6 +49,7 @@ deterministic, which also means it can be tested.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from typing import Any
@@ -57,6 +58,7 @@ from typing import Any
 TIER_RAW_CONTROLS = "raw_control_chars"
 TIER_TERMINAL_STRING = "terminal_string"
 TIER_NATIVE_IN_CONTENT = "native_call_in_content"
+TIER_PYTHON_LITERAL = "python_literal"
 TIERS = (TIER_NATIVE_IN_CONTENT, TIER_RAW_CONTROLS, TIER_TERMINAL_STRING)
 
 #: A tool call, whatever the provider called the fields. Both spellings are in
@@ -103,6 +105,69 @@ def _escape_raw_controls(blob: str) -> str:
     return "".join(out)
 
 
+def _python_literal(blob: str) -> Any:
+    """Recover an object written as a PYTHON literal instead of JSON.
+
+    ``True``, ``False``, ``None`` and single-quoted strings are what a model
+    trained on Python writes when asked for "a JSON object", and json.loads
+    rejects all four. The call is otherwise perfect: right tool, right
+    arguments, right payload.
+
+    Measured on the expansion cohort: ministral-3:3b emitted one of these in 28
+    of 50 runs. Every one of them fell through to ``_terminal_string``, which is
+    built for a different failure and mangled them -- so a Python ``True`` in an
+    unrelated argument was destroying the argument next to it.
+
+    ``ast.literal_eval`` is the whole implementation because it is exactly the
+    right tool: it parses literals and refuses everything else. It cannot call,
+    import, or evaluate a name, so a blob that is really code is a SyntaxError
+    or ValueError here, not an execution.
+    """
+    try:
+        tree = ast.parse(blob.strip(), mode="eval")
+    except (ValueError, SyntaxError, MemoryError, RecursionError) as exc:
+        del exc
+        return None
+    # ``literal_eval`` keeps the LAST of a duplicated key, silently. That is the
+    # argument-smuggling shape the JSON path already refuses -- {"argv": [safe],
+    # "argv": [hostile]} -- and it would have walked straight through this tier.
+    # Caught by the suite's own red-team test, not by me.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        seen = []
+        for key in node.keys:
+            if isinstance(key, ast.Constant):
+                if key.value in seen:
+                    return None
+                seen.append(key.value)
+    try:
+        parsed = ast.literal_eval(tree)
+    except (ValueError, SyntaxError, MemoryError, RecursionError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _closes_its_object(blob: str) -> bool:
+    """Whether the blob's braces balance out before the text ends.
+
+    Cheap and deliberately naive: a brace inside a string payload counts too.
+    That errs toward "this object closed", which makes ``_terminal_string``
+    REFUSE rather than guess -- the safe direction, because the cost of refusing
+    is an ordinary recoverable error and the cost of guessing wrong is a
+    silently corrupted argument.
+    """
+    depth = 0
+    for ch in blob:
+        if ch == "{":
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0:
+                return True
+    return False
+
+
 def _terminal_string(blob: str) -> Any:
     """Recover an object whose LAST string value contains unescaped quotes.
 
@@ -125,12 +190,21 @@ def _terminal_string(blob: str) -> Any:
     tail = re.search(r'"[\s}\]]*$', blob)
     if tail:
         close_at = tail.start()
-    elif blob.rstrip() and blob.rstrip()[-1] not in "}]":
-        # No closing quote anywhere: the generation was cut off mid-payload
-        # (num_predict ran out), so the payload runs to the end and there is no
-        # trailing prose to mistake for it -- a truncated generation stops, it
-        # does not go on to say something else. A blob that DOES close its
-        # braces is a different failure and is left alone rather than guessed at.
+    elif (blob.rstrip() and blob.rstrip()[-1] not in "}]"
+          and not _closes_its_object(blob)):
+        # No closing quote anywhere AND the object never closed: the generation
+        # was cut off mid-payload (num_predict ran out), so the payload runs to
+        # the end and there is no trailing prose to mistake for it.
+        #
+        # The second half of that condition is not decoration. Without it, ANY
+        # text after a complete object -- a closing ``` fence, a note, an
+        # explanation -- made this branch swallow the rest of the object into
+        # the last argument. Reproduced exactly: a read_file whose ``path`` came
+        # back as the file path with the REST OF THE OBJECT glued onto it,
+        # closing fence included, and a grep whose ``pattern`` swallowed its
+        # own ``context`` and
+        # ``ignore_case``. A truncated generation STOPS; it does not close its
+        # braces and then keep writing.
         close_at = len(blob)
     else:
         return None
@@ -291,6 +365,7 @@ def recover(content: str, *, known_tools: frozenset[str] | None = None
         for tier, candidate in (
             (TIER_NATIVE_IN_CONTENT, _try(_loads, blob)),
             (TIER_RAW_CONTROLS, _try(_loads, _escape_raw_controls(blob))),
+            (TIER_PYTHON_LITERAL, _python_literal(blob)),
             (TIER_TERMINAL_STRING, _terminal_string(blob)),
         ):
             if candidate is None:

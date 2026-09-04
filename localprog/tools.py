@@ -205,6 +205,13 @@ class ToolContext:
     #: while the agent gives up on turn six is the same defect as F-45.
     top_candidates: list = field(default_factory=list)
     opened: set = field(default_factory=set)
+    #: (path, resolved symbol) of every symbol the agent has itself reached,
+    #: oldest first. Distinct from ``opening_candidate``, which is the HARNESS's
+    #: turn-zero guess: this is the agent's own decision, already made and
+    #: already validated against the file. F-94 -- a refusal that names the
+    #: harness's guess while the agent is holding a resolved symbol of its own
+    #: is arguing with it, and two runs spent twenty turns on that argument.
+    reached_symbols: list = field(default_factory=list)
     #: Budget state, written by the loop each turn so finish can weigh
     #: 'I am stuck' against 'I have barely started'.
     turns_left: int | None = None
@@ -1175,6 +1182,11 @@ def read_symbol(ctx: ToolContext, path: Any, name: Any) -> str:
     source = _read_text(rel, target)
     ctx.opened.add(rel)
     name, node, found, start, end = _symbol_span(rel, source, name)
+    # The agent reached this by itself and the file agreed. Kept so a later
+    # refusal can complete the call rather than propose a different one (F-94).
+    if (rel, name) in ctx.reached_symbols:
+        ctx.reached_symbols.remove((rel, name))
+    ctx.reached_symbols.append((rel, name))
     lines = source.splitlines()
     # VERBATIM, with no per-line numbering (F-64). read_symbol exists to hand
     # back a symbol's source, and the commonest thing done with that source is
@@ -1555,10 +1567,43 @@ def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
     has_name = isinstance(name, str) and name.strip()
     has_lines = start is not None or end is not None
     if has_name and has_lines:
-        raise InvalidCall(
-            ERROR_BAD_ARGUMENTS,
-            "copy_code toma name= O start=/end=, no las dos. Con name copias un "
-            "simbolo entero; con start/end copias un rango de lineas.")
+        # F-93. Sending both is not a contradiction by itself -- it is what a
+        # model does after read_symbol PRINTS the span: it repeats the name it
+        # asked for and the line numbers it was just shown. When the two say the
+        # same thing there is exactly one objective answer, and refusing it cost
+        # a turn spent deleting an argument that was correct. Measured on the
+        # expansion cohort: 18 runs across four engines, 10 of them
+        # ministral-3:3b, every retry identical but for the dropped name.
+        #
+        # When they DISAGREE the intent really is ambiguous -- a class name with
+        # one method's lines, a symbol with the whole file's range -- and that
+        # stays a refusal, now quoting the span the name actually has so the
+        # next call can be right. The harness completes a fact it knows; it does
+        # not decide a question the model has left open.
+        total = len(source.splitlines())
+        span = None
+        try:
+            _n, _node, _found, _lo, _hi = _symbol_span(src_rel, source, name.strip())
+            span = (_lo, _hi)
+        except (ToolError, InvalidCall):
+            span = None
+        agreed = (span is not None and start is not None and end is not None
+                  and _line_number("start", start, total) == span[0]
+                  and _line_number("end", end, total) == span[1])
+        if not agreed:
+            where = ""
+            if span is not None:
+                where = (NEWLINE + f"  {name.strip()!r} ocupa las lineas "
+                         f"{span[0]}-{span[1]} en {src_rel!r}, que no es lo que "
+                         f"has pedido.")
+            raise InvalidCall(
+                ERROR_BAD_ARGUMENTS,
+                "copy_code toma name= O start=/end=, no las dos, porque en esta "
+                "llamada no dicen lo mismo." + where
+                + NEWLINE + "  Copia el simbolo entero con name=, o el rango "
+                  "exacto con start=/end=, pero no los dos.")
+        has_lines = False
+        start = end = None
     if not has_name and not has_lines:
         # The path is already resolved and the file is already read, so the
         # question this call was asking -- "what can I copy out of here?" -- can
@@ -2117,13 +2162,22 @@ def finish(ctx: ToolContext, summary: Any = None, status: Any = "DONE") -> str:
                 f"\n  ESTA MISION ESPERA QUE CREES: {', '.join(pending[:4])}. "
                 f"Todavia no existe."
             )
-            if ctx.opening_candidate:
-                # The harness ranked this at turn zero and it is already in the
-                # objective. Naming the CALL beats naming a tool: qwen2.5-coder
-                # :3b called finish twenty times in a row against a message that
-                # described write_file in prose. And the ablation measured what
-                # naming the copy is worth -- without the turn-zero shortlist
-                # granite falls from 60% to 20%, reach 29/50 to 9/50.
+            # The agent's OWN resolved symbol first, the harness's turn-zero
+            # guess only as a fallback (F-94). Both name a concrete call --
+            # which is what matters, since qwen2.5-coder:3b called finish twenty
+            # times against a message that described write_file in prose, and
+            # the ablation showed the turn-zero shortlist is worth 60% vs 20%.
+            # But when the agent has already reached a symbol, proposing a
+            # different file is the harness overriding a decision that was made
+            # correctly, and two runs spent their whole budget on that.
+            reached = ctx.reached_symbols[-1] if ctx.reached_symbols else None
+            if reached:
+                src, symbol = reached
+                wanted += (f"\n  Ya has leido {symbol!r} en {src!r} y NO lo has "
+                           f"copiado a ningun sitio. Si es la respuesta: "
+                           f"copy_code(src='{src}', into='{pending[0]}', "
+                           f"name='{symbol}').")
+            elif ctx.opening_candidate:
                 src, symbol = ctx.opening_candidate
                 wanted += (f"\n  Si la respuesta ya esta en el repositorio, "
                            f"copiala sin reescribirla: copy_code(src='{src}', "
