@@ -900,6 +900,26 @@
    "impact": "copy_code solved transport and created a precision problem. It copies whole classes and whole files where one function was wanted.",
    "cause": "copy_code inherited read_symbol's behaviour on a class and not its F-70 warning -- and it needs the warning MORE, because it deliberately does not return the body, so an over-copy leaves nothing the agent can see.",
    "fix": "PATCH WRITTEN, NOT APPLIED. Held until all three engines had run identical code: applying it mid-sweep would have made granite's numbers incomparable with the 4B's and qwen2.5-coder's. Two notes from facts the call already has -- the symbol resolved to a class, with its methods named; and the copied region is most of the file. Notes, not refusals: copying a whole class is sometimes right, and F-63 is the standing lesson about refusing things that are sometimes right."
+  },
+  {
+   "id": "F-85",
+   "priority": "P0",
+   "component": "tools / my own fix",
+   "status": "FIXED",
+   "evidence": "granite4.1:3b, 12 of 50 runs: t1 copy_code with the right file and no selector -> the catalogue lists the symbols and shows a worked example using names[0]; t2 copy_code with THAT name -- 'ALWAYS_NO_SPACE' when it wanted 'visit', 'LazyProxy' when it wanted '__getattr__'; t3 finish DONE. Three turns, confident, wrong.",
+   "impact": "A defect I introduced in F-80 while fixing a different one. The listing was in file order on purpose -- I did not want ranking inside an error message -- and then I showed an example using the first name, which turned the ordering I had been careful about into a recommendation.",
+   "cause": "An unranked list presented as a menu is worse than no list.",
+   "fix": "The listing says it is in FILE ORDER and not by relevance, names no candidate, and points at the tool that DOES rank with the call filled in: search_code(query=..., path=<that file>), which F-79 made possible. The principle survives -- retrieval still does not happen in an error message."
+  },
+  {
+   "id": "F-86",
+   "priority": "P1",
+   "component": "efficiency",
+   "status": "MEASURED",
+   "evidence": "Frozen HEAD -> with the completion and over-copy notes. granite: wall ratio 2.6x -> 1.2x, per-success 83s -> 23s, turns mean 5.3 -> 4.2. 4B: ratio 11.0x -> 9.0x, per-success 94s -> 40s. Scores unchanged within noise (4B 72 -> 70, granite 28 -> 28, qwen2.5 10 -> 8).",
+   "impact": "Capability preserved, latency materially better. Conversion when the symbol is reached rose to 100% for both 3B engines and 88% for the 4B.",
+   "cause": "42 of 50 runs had a correct answer and never called finish.",
+   "fix": "Accepted under the promotion rule: capability >= baseline AND at least one of latency/tokens/turns improved. Both did."
   }
  ],
  "safety_record": {

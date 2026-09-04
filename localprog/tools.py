@@ -1540,11 +1540,28 @@ def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
         except ToolError:
             names = []
         if names:
-            shown = ", ".join(names[:15])
-            catalogue = (f"\n  En {src_rel!r} hay estos simbolos: {shown}"
-                         + (f" (+{len(names) - 15} mas)" if len(names) > 15 else "")
-                         + f".\n  Por ejemplo: copy_code(src={src_rel!r}, "
-                           f"into={into_rel!r}, name={names[0]!r})")
+            # In FILE order, and it now says so. The first version listed
+            # them and showed a worked example using names[0], which turned
+            # an error message into a menu: granite4.1:3b took the first
+            # symbol offered in 12 of 50 runs -- ALWAYS_NO_SPACE when it
+            # wanted visit, LazyProxy when it wanted __getattr__ -- and
+            # finished DONE, confident. An unranked list presented as a
+            # choice is worse than no list.
+            #
+            # The ranking still does not happen here; errors are not where
+            # retrieval belongs. It points at the tool that ranks, with the
+            # call filled in, which F-79 made possible by letting
+            # search_code scope to a single file.
+            shown = ", ".join(names[:12])
+            catalogue = (
+                f"\n  En {src_rel!r} hay {len(names)} simbolos, EN ORDEN DE "
+                f"FICHERO y no por lo que buscas: {shown}"
+                + (f" (+{len(names) - 12} mas)" if len(names) > 12 else "")
+                + f".\n  Si NO sabes cual necesitas, no elijas uno al azar: "
+                  f"search_code(query='<la descripcion de lo que buscas>', "
+                  f"path={src_rel!r}) te los ordena por parecido."
+                  f"\n  Cuando sepas cual es: copy_code(src={src_rel!r}, "
+                  f"into={into_rel!r}, name='<ese>')")
         else:
             catalogue = (f"\n  {src_rel!r} tiene {len(source.splitlines())} lineas; "
                          f"copialas con start= y end=.")

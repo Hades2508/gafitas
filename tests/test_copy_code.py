@@ -144,6 +144,17 @@ def test_neither_selector_lists_what_there_is_to_copy(tmp_path):
     detail = exc.value.detail
     assert "sencilla" in detail and "con_decorador" in detail
     assert "copy_code(src='origen.py'" in detail
+    # And it must NOT read as a recommendation. The first version showed a
+    # worked example using names[0], and granite4.1:3b took the first symbol
+    # offered in 12 of 50 runs -- ALWAYS_NO_SPACE when it wanted visit -- and
+    # finished DONE. An unranked list presented as a choice is worse than none.
+    assert "EN ORDEN DE FICHERO" in detail
+    assert "no elijas uno al azar" in detail
+    assert "search_code(query=" in detail and "path='origen.py'" in detail
+    for symbol in ("sencilla", "con_decorador", "Caja"):
+        assert f"name='{symbol}'" not in detail, (
+            f"the catalogue must not recommend {symbol}: it does not know which "
+            f"one is wanted, and saying one is how the wrong one gets copied")
 
 
 def test_the_catalogue_falls_back_to_line_counts_without_a_parser(tmp_path):
