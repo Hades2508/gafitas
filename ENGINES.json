@@ -1,6 +1,27 @@
 {
  "schema": "GAFITAS_ENGINE_CAPABILITIES_V1",
  "engines": {
+  "gemma3:4b": {
+   "name": "gemma3:4b",
+   "context_window": 131072,
+   "served_context": 32768,
+   "max_output_tokens": null,
+   "supports_native_tools": false,
+   "native_payload_limit": null,
+   "supports_text_tool_protocol": true,
+   "text_payload_limit": 3200,
+   "structured_output": null,
+   "streaming": null,
+   "usage_reporting": false,
+   "known_protocol_constraints": [
+    "native tool probe rejected with HTTP 400"
+   ],
+   "source": "probed+ctx32768",
+   "probed_at": 1788525312.7317817,
+   "parameter_size": "4.3B",
+   "quantization": "Q4_K_M",
+   "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
+  },
   "granite4.1:3b": {
    "name": "granite4.1:3b",
    "context_window": 131072,
@@ -20,6 +41,46 @@
    "quantization": "Q4_K_M",
    "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
   },
+  "granite4.2:3b": {
+   "name": "granite4.2:3b",
+   "context_window": 131072,
+   "served_context": 32768,
+   "max_output_tokens": null,
+   "supports_native_tools": false,
+   "native_payload_limit": null,
+   "supports_text_tool_protocol": true,
+   "text_payload_limit": 200,
+   "structured_output": null,
+   "streaming": null,
+   "usage_reporting": true,
+   "known_protocol_constraints": [
+    "did not reproduce the JSON tool protocol on demand"
+   ],
+   "source": "probed+ctx32768",
+   "probed_at": 1788525105.3768756,
+   "parameter_size": "3.7B",
+   "quantization": "Q4_K_M",
+   "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
+  },
+  "ministral-3:3b": {
+   "name": "ministral-3:3b",
+   "context_window": 262144,
+   "served_context": 32768,
+   "max_output_tokens": null,
+   "supports_native_tools": true,
+   "native_payload_limit": 400,
+   "supports_text_tool_protocol": true,
+   "text_payload_limit": 3200,
+   "structured_output": null,
+   "streaming": null,
+   "usage_reporting": true,
+   "known_protocol_constraints": [],
+   "source": "probed+ctx32768",
+   "probed_at": 1788525230.479755,
+   "parameter_size": "3.8B",
+   "quantization": "Q4_K_M",
+   "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
+  },
   "phi4-mini:3.8b": {
    "name": "phi4-mini:3.8b",
    "context_window": 131072,
@@ -28,14 +89,14 @@
    "supports_native_tools": false,
    "native_payload_limit": null,
    "supports_text_tool_protocol": true,
-   "text_payload_limit": null,
+   "text_payload_limit": 200,
    "structured_output": null,
    "streaming": null,
    "usage_reporting": true,
    "known_protocol_constraints": [
     "handed a tool schema it answered in prose: native tool calls not observed"
    ],
-   "source": "probed",
+   "source": "probed+ctx32768",
    "probed_at": 1788459177.6700056,
    "parameter_size": "3.8B",
    "quantization": "Q4_K_M",
@@ -59,6 +120,25 @@
    "source": "probed+payload_limit",
    "probed_at": 1788459243.3657646,
    "parameter_size": "3.1B",
+   "quantization": "Q4_K_M",
+   "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
+  },
+  "qwen3.5:2b-q4_K_M": {
+   "name": "qwen3.5:2b-q4_K_M",
+   "context_window": 262144,
+   "served_context": 32768,
+   "max_output_tokens": null,
+   "supports_native_tools": true,
+   "native_payload_limit": 0,
+   "supports_text_tool_protocol": true,
+   "text_payload_limit": 0,
+   "structured_output": null,
+   "streaming": null,
+   "usage_reporting": true,
+   "known_protocol_constraints": [],
+   "source": "probed+ctx32768",
+   "probed_at": 1788525033.865304,
+   "parameter_size": "2.3B",
    "quantization": "Q4_K_M",
    "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
   },

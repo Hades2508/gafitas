@@ -625,10 +625,17 @@ def measure_payload_limit(provider, *, protocol_name: str = "A",
                           ladder: tuple[int, ...] = LIMIT_LADDER) -> dict:
     """Largest payload that survives a tool call, in characters.
 
-    Stops at the first rung that is lost, because the failure is a parser
-    cliff and not a gradient -- granite is perfect at 400 and returns an empty
-    envelope at 800. Climbing past a lost rung would spend generations
-    confirming something already known.
+    Climbs the WHOLE ladder. The first version stopped at the first lost rung,
+    on the theory that the failure is a parser cliff rather than a gradient --
+    which is true for granite4.1:3b and false as a general rule. Each rung is a
+    single generation, so one stochastic miss truncated the ladder and reported
+    a limit far below the truth: phi4-mini:3.8b measured 1600 in one pass and
+    200 in the next, and qwen3.5:2b measured 400 and then 0. Protocol choice
+    depends on this number, so a number that halves on a re-run is not usable.
+
+    The reported limit is the HIGHEST rung that survived, and every rung is kept
+    so a real cliff (all failures above a point) can still be told apart from
+    noise (a gap with survivors above it).
 
     Returns ``limit`` = the last rung that survived (0 if none did), and
     ``ceiling_reached`` = whether the ladder ran out before the engine did, in
@@ -675,8 +682,17 @@ def measure_payload_limit(provider, *, protocol_name: str = "A",
         rungs.append({"size": size, "survived": survived, "reason": reason,
                       "repaired": repaired,
                       "generated_tokens": int((raw or {}).get("eval_count") or 0)})
-        if not survived:
-            break
-        limit = size
-    return {"protocol": protocol_name, "limit": limit,
-            "ceiling_reached": limit == ladder[-1], "rungs": rungs}
+        if survived:
+            limit = size
+    survivors = [r["size"] for r in rungs if r["survived"]]
+    lost = [r["size"] for r in rungs if not r["survived"]]
+    return {
+        "protocol": protocol_name,
+        "limit": limit,
+        "ceiling_reached": limit == ladder[-1],
+        # A cliff is every rung above a point failing. A gap with survivors
+        # above it is noise, and calling it a cliff is how a protocol gets
+        # chosen on a coin flip.
+        "clean_cliff": bool(lost) and bool(survivors) and min(lost) > max(survivors),
+        "rungs": rungs,
+    }
