@@ -970,6 +970,78 @@
    "impact": "The third engine remains DEGRADED after every harness defect found for the other two was fixed.",
    "cause": "Eliminated by measurement: protocol (J, chosen by payload limit), payload channel (repaired), tool surface (legal_tools), naming (the concrete call is given), stalling (now caught at 6 repeats), finish semantics (summary no longer required), prompt size (granite runs the identical prompt and succeeds). What is left is task engagement, and the persistence probe cannot see it -- see F-90.",
    "fix": "NONE YET. Stated as a frontier CANDIDATE and not a frontier: the honest claim is that no further harness hypothesis has been tested, not that none exists. Cost did improve: 28s per success against 277s at v4."
+  },
+  {
+   "id": "F-92",
+   "priority": "P1",
+   "component": "localprog/repair.py",
+   "status": "FIXED",
+   "evidence": "28 of 50 runs in one cohort, and present in six engines across 2338 sealed runs. Reproduced against the module byte for byte: a read_file whose path came back as the file name with the rest of the object and the closing fence glued onto it, and a grep whose pattern swallowed its own context and ignore_case arguments.",
+   "impact": "A correct tool call with a Python literal in ONE argument had the argument NEXT TO IT destroyed. The model had chosen the right tool, the right file and the right symbol; the harness handed the tool a corrupted path and reported the model's error.",
+   "cause": "Two independent defects compounding. (1) json.loads rejects True, False, None and single quotes -- which is what a Python-trained model writes when asked for a JSON object -- so the call fell through to the _terminal_string tier. (2) That tier treated 'the blob does not end in a brace' as 'the generation was truncated', and so ran the last string value to the end of the text. Any fence, note or explanation after a COMPLETE object therefore became part of the last argument. A truncated generation stops; it does not close its braces and then keep writing.",
+   "fix": "Added a python_literal tier (ast.literal_eval, which parses literals and refuses names, calls and imports) ahead of _terminal_string, and narrowed the truncation branch to blobs whose object never closes. The suite's own red-team test caught what I missed: literal_eval keeps the LAST of a duplicated key silently, which is the argument-smuggling shape the JSON path already refuses, so duplicate keys are now rejected before evaluation.",
+   "risk": "A payload containing unbalanced braces could make _closes_its_object read 'closed' and refuse a repair it would previously have made. That direction is deliberate: refusing yields an ordinary recoverable error, guessing yields a silently corrupted argument.",
+   "dependencies": "none"
+  },
+  {
+   "id": "F-93",
+   "priority": "P2",
+   "component": "localprog/tools.py copy_code",
+   "status": "FIXED",
+   "evidence": "18 runs across four engines, ten of them in one cohort. Every retry was the identical call with the name argument deleted.",
+   "impact": "One wasted turn per occurrence, and the retry discarded the semantic anchor and kept only the arithmetic.",
+   "cause": "read_symbol PRINTS the span it resolved. The model then calls copy_code with the name it asked for AND the line numbers it was just shown, which is agreement, not contradiction -- and the harness refused it as though the two could not both be meant. An interface demanding that the model UNSAY something it had got right.",
+   "fix": "When the name resolves and the range equals the symbol's own span there is exactly one objective answer, so the call is completed. When they disagree the intent really is open -- a class name with one method's lines, a symbol with the whole file's range -- and it stays a refusal, now quoting the span the name actually has so the next call can be right without another read.",
+   "risk": "None measured. Disagreement, a half-specified range, and an unresolvable name are all still refused, and the copy is never silently redirected to a range the model did not ask for.",
+   "dependencies": "none"
+  },
+  {
+   "id": "F-94",
+   "priority": "P1",
+   "component": "localprog/tools.py finish",
+   "status": "FIXED",
+   "evidence": "21 runs across four engines reached a symbol, never copied it, and were refused at finish. Two of them spent their entire budget on it: read_symbol resolved Installer._write_lock_file on turn 3 and then six consecutive finish(DONE) calls were refused, STALLED at turn 20; another resolved Env.base on turn 4, six refusals, BUDGET_EXHAUSTED at turn 20.",
+   "impact": "The whole run lost, with the correct symbol already located and validated against the file.",
+   "cause": "The refusal named the HARNESS's turn-zero candidate -- in both cases a different file from the one the agent had just successfully opened. So the message argued with a decision the agent had already made correctly, instead of completing it. The harness knew for certain that this agent had resolved symbol S in file F and that the answer file did not exist; the call was fully determined and it proposed a different one.",
+   "fix": "read_symbol records every symbol the agent itself resolves. The refusal names the most recent of those, and falls back to the turn-zero candidate only when the agent has reached nothing. The shortlist is not removed -- its ablation is worth 60% against 20%, reach 29/50 against 9/50, p=0.0094 -- it just stops speaking over the agent. Writing the answer yourself is still offered, so the help stays additive.",
+   "risk": "The named call is the one the agent already validated, so the next turn cannot fail on a symbol that does not exist. A test runs the proposed call to prove the harness would accept it.",
+   "dependencies": "F-82, and the opening_candidates ablation"
+  },
+  {
+   "id": "F-95",
+   "priority": "P0",
+   "component": "localprog/engine.py working_output",
+   "status": "FIXED",
+   "evidence": "One engine spent 170 of its 242 turns on ERROR_NO_TOOL_CALL -- 70% -- and scored 28% through GAFITAS against 66% bare. Its output usage: mean 916, median 974, max 1024 tokens per call, against a reference engine on the identical prompt at mean 61, median 46. 1024 is CONSERVATIVE_OUTPUT, the harness's own fallback.",
+   "impact": "The single largest harness ceiling found. An engine that reasons before answering was cut off mid-thought on nearly every turn, returned empty content, and was told 'respuesta vacia; llama a una herramienta' -- blamed for a ceiling we chose. It was reported as DEGRADED -38 and the degradation was ours.",
+   "cause": "An engine that returns its reasoning in a channel of its own pays for that reasoning out of the same output budget as the call. CONSERVATIVE_OUTPUT is a guess for engines that declare no limit, and for a reasoning engine the guess is a gag.",
+   "fix": "emits_reasoning_channel is probed and recorded -- observed at the wire from whether the message carries a non-empty reasoning field, never inferred from the engine name -- and it governs exactly one number: the budget the harness guesses when the engine declares none. A declared max_output_tokens still wins, and the context-quarter ceiling is still hard. Two engines in the registry measure TRUE and two from the same families measure FALSE, which is why the property has to be measured.",
+   "risk": "Latency. The smoke test measured a 3.7x wall-clock ratio against the bare arm at the larger budget, with output settling at 1524 tokens per call, so the new ceiling is a ceiling and not a cost -- but the reasoning itself is real time. Recorded, not traded away: the turn economy went from 26% real tool calls to 93%, and 170 empty turns to zero.",
+   "dependencies": "F-96"
+  },
+  {
+   "id": "F-96",
+   "priority": "P0",
+   "component": "REPOQA/run_matched.py",
+   "status": "FIXED",
+   "evidence": "The bare arm was called with a hardcoded num_predict=2048. The GAFITAS arm was called with caps.working_output(), which is 1024 for every engine that declares no limit. Measured consequence: one engine produced 2172 characters of reasoning and ZERO characters of answer at the budget the GAFITAS arm was running.",
+   "impact": "A defect in my own instrument, not in GAFITAS. The two arms of a comparison whose entire claim is that GAFITAS is the only difference were given different output budgets, with twice the room going to the bare arm. It costs nothing where the answer is short, which is why it survived, and it decides the result where the engine reasons before answering. The five-engine expansion cohort's +20 AMPLIFIED and -38 DEGRADED were both produced by it and neither number survives.",
+   "cause": "The bare arm's provider was constructed separately from provider_for() and never updated when working_output() was introduced.",
+   "fix": "Both arms take the budget from the same place. The five-engine expansion cohort is recorded as measured through an unequal instrument and is excluded from conclusions; it is preserved in full, not deleted.",
+   "risk": "Previously sealed cohorts are not comparable to anything measured after this, because the bare arm's budget changed for every engine. That is the price of the correction and it is stated rather than absorbed.",
+   "dependencies": "F-95"
+  },
+  {
+   "id": "F-97",
+   "priority": "P3",
+   "component": "REPOQA corpus",
+   "status": "FALSIFIED_HYPOTHESIS_RECORDED",
+   "evidence": "read_symbol reported ERROR_NO_MATCH for a nested symbol the bare arm answered correctly, which looked like the symbol index failing to walk nested function definitions. It does walk them. Checked all fifty needles against the checkout: 49 resolve, and that one is genuinely absent from the file at this commit.",
+   "impact": "None on the harness. It is one case of corpus drift between the dataset's commit and the checkout, and it inflates the bare arm -- a model that dumps a large superset of the file can clear the 0.5 similarity threshold against a needle the file no longer contains, while a precise answer cannot.",
+   "cause": "Dataset and checkout at different commits for one needle.",
+   "fix": "Recorded, not patched. The hypothesis that the symbol index could not see nested definitions is FALSIFIED and kept as falsified rather than reinterpreted.",
+   "risk": "none",
+   "dependencies": "none"
   }
  ],
  "safety_record": {
@@ -983,7 +1055,9 @@
   "the ga04 class (a 16-requirement module from a written spec) likewise",
   "Behavioral Oracle is still a separate authority, not wired in as extra conscience signals",
   "no commit/handoff step: the patch is produced, promotion stays a human decision",
-  "Explorer never demonstrated as needed, so never integrated"
+  "Explorer never demonstrated as needed, so never integrated",
+  "F-96 invalidates the five-engine expansion cohort's deltas; the cohort is preserved and excluded from conclusions",
+  "latency cost of the F-95 reasoning budget is measured but not yet optimised"
  ],
  "objective": "Remove the paid tier from the normal programming path. Luna and Claude become construction, teaching and audit tools; they are not runtime dependencies for the supported task classes.",
  "final_measurement": {
