@@ -920,6 +920,36 @@
    "impact": "Capability preserved, latency materially better. Conversion when the symbol is reached rose to 100% for both 3B engines and 88% for the 4B.",
    "cause": "42 of 50 runs had a correct answer and never called finish.",
    "fix": "Accepted under the promotion rule: capability >= baseline AND at least one of latency/tokens/turns improved. Both did."
+  },
+  {
+   "id": "F-87",
+   "priority": "P0",
+   "component": "RESULT",
+   "status": "REPRODUCED",
+   "evidence": "granite4.1:3b, four runs on identical code, same 50-case corpus: 44/60, 48/64, 48/56, 48/60. Pooled +56/-30, n=86, McNemar exact p=0.0067. Mean 47% bare against 60% through GAFITAS. Latency ratio 0.9-1.2x -- FASTER than the bare model in two of four runs, because copy_code moves the bytes and the engine never generates the payload. Median 2 turns. 8-11s per success against 1242s the same morning.",
+   "impact": "A second engine, a different vendor and a smaller tier, is amplified rather than preserved. The model was not touched (I15).",
+   "cause": "Nine harness defects, not the engine. Reach went 2/50 -> ~29/50 and conversion once the symbol is reached is 96-100%.",
+   "fix": "n/a -- this is the result, recorded so a later regression has something to be measured against."
+  },
+  {
+   "id": "F-88",
+   "priority": "P1",
+   "component": "experiment integrity",
+   "status": "FIXED",
+   "evidence": "matched_granite_r1's evidence directory held 100 sealed tickets for a 50-case run: 50 from 2026-09-03 and 50 from 2026-09-04. Caught only because selection_analysis reported n=100.",
+   "impact": "Scores were never affected -- those come from freshly written jsonl -- but every analysis reading the ticket directory saw two code versions as one run. r1's selection breakdown was wrong until this was found.",
+   "cause": "Reusing a label APPENDED evidence instead of refusing. DECLARED == MATERIALIZED == CONSUMED == EVALUATED broke quietly, which is the worst way for it to break.",
+   "fix": "run_matched.py refuses a label that already holds sealed tickets; --overwrite deletes them on purpose. The 50 contaminated tickets are PRESERVED under CONTAMINATED_matched_granite_r1_20260903 with a README, not deleted: a contaminated cohort is the record of how this harness can produce an invalid analysis in silence."
+  },
+  {
+   "id": "F-89",
+   "priority": "P1",
+   "component": "hypothesis, mine, falsified",
+   "status": "FALSIFIED_AND_REVERSED",
+   "evidence": "TinyAgent (arXiv 2409.00608) measured that basic similarity RAG DECREASED small-model function-calling accuracy (74.88% against 78.89% with no retrieval), and my own v4 run moved granite's reach 13->15, which is flat. I concluded opening_candidates was probably dead weight and set out to remove it. The ablation says the opposite: without it granite falls from 60% to 34% and reach from ~29/50 to 10/38.",
+   "impact": "Acting on external evidence without measuring it in our own system would have cost the result of the day.",
+   "cause": "The v4 reading was taken before the shortlist named copy_code. External evidence about a different system is a hypothesis here, never a finding.",
+   "fix": "Kept. The ablation decided it, not the argument."
   }
  ],
  "safety_record": {
