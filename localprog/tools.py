@@ -1632,6 +1632,9 @@ def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
     _write_text(into_path, existing + separator + body)
     ctx.changed_files.add(into_rel)
     ctx.created_files.add(into_rel)
+    # Counted here as well as in write_file, so "how many things are in this
+    # file" is one number rather than two that disagree.
+    ctx.write_counts[into_rel] = ctx.write_counts.get(into_rel, 0) + 1
     return {
         # Everything a reviewer needs to check the bytes came off disk and not
         # out of the model. A tool that moves text nobody saw would otherwise be
@@ -1652,8 +1655,40 @@ def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
         # matters more here.
         "note": (_copied_too_much(node, name if has_name else "", src_rel,
                                   into_rel, lo, hi, len(lines))
+                 + _appended_note(ctx, into_rel, bool(existing))
                  + _mission_output_ready(ctx)),
     }
+
+
+def _appended_note(ctx: ToolContext, into_rel: str, appended: bool) -> str:
+    """Say that this copy was ADDED to what was already there.
+
+    copy_code appends into a file this run created, which is what an
+    extract-to-module refactor needs: several definitions moved into one new
+    file. On a mission whose output is a single answer it silently concatenates,
+    and the reference engine's v7 runs show exactly that:
+
+        reached the symbol and was RIGHT   30 runs, 2.0 copies, 396 chars
+        reached the symbol and was WRONG    8 runs, 4.5 copies, 963 chars
+
+    The failing ones copied the right symbol AND several others. Conversion fell
+    92% -> 86% -> 82% -> 77% across the versions where the turn-zero shortlist
+    started naming a candidate to copy. Two of my own changes, each defensible,
+    combining into a defect neither had alone.
+
+    A note and not a refusal: appending is sometimes precisely the intent. What
+    was missing is that the agent could not see it had happened -- copy_code
+    deliberately does not return the body, so a concatenation leaves no trace in
+    the transcript.
+    """
+    if not appended:
+        return ""
+    total = ctx.write_counts.get(into_rel, 0)
+    return (f"{NEWLINE}[OJO: {into_rel} YA tenia contenido y esto se ha ANADIDO "
+            f"al final, no lo ha sustituido. El fichero lleva ya {total} "
+            f"copias. Si la respuesta es UNA sola definicion, ahora hay de mas: "
+            f"reescribelo con write_file(path='{into_rel}', content=<solo la "
+            f"que quieres>) antes de terminar.]")
 
 
 def _line_number(field: str, value: Any, total: int) -> int:

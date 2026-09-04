@@ -254,3 +254,52 @@ def test_the_not_found_message_lists_what_is_actually_there(tmp_path):
     with pytest.raises(ToolError) as exc:
         tools.copy_code(ctx, "origen_mal.py", "salida.py", name="sencilla")
     assert "origen.py" in exc.value.detail
+
+
+def test_an_append_says_it_appended(tmp_path):
+    """copy_code appends into a file this run created, which is what an
+    extract-to-module refactor needs and what silently concatenates a
+    single-answer mission. The reference engine's v7 runs:
+
+        reached the symbol and was RIGHT   30 runs, 2.0 copies, 396 chars
+        reached the symbol and was WRONG    8 runs, 4.5 copies, 963 chars
+
+    The failing ones copied the right symbol AND several others. Conversion fell
+    92% -> 77% across the versions where turn zero began naming a candidate to
+    copy: two changes of mine, each defensible, combining into a defect neither
+    had alone.
+
+    A note and not a refusal -- appending is sometimes exactly the intent. What
+    was missing is that the agent could not SEE it, because copy_code
+    deliberately does not return the body.
+    """
+    ctx = ctx_for(tmp_path)
+    first = tools.copy_code(ctx, "origen.py", "salida.py", name="sencilla")
+    assert first["appended"] is False
+    assert "ANADIDO" not in first["note"]
+
+    second = tools.copy_code(ctx, "origen.py", "salida.py", name="con_decorador")
+    assert second["appended"] is True
+    assert "ANADIDO" in second["note"]
+    assert "2 copias" in second["note"]
+    assert "write_file(path='salida.py'" in second["note"]
+
+
+def test_the_append_count_is_one_number(tmp_path):
+    """Counted in copy_code and in write_file alike, so "how many things are in
+    this file" cannot be two numbers that disagree."""
+    ctx = ctx_for(tmp_path)
+    tools.copy_code(ctx, "origen.py", "salida.py", name="sencilla")
+    tools.write_file(ctx, "salida.py", "reescrito\n")
+    third = tools.copy_code(ctx, "origen.py", "salida.py", name="con_decorador")
+    assert "3 copias" in third["note"]
+
+
+def test_appending_still_works(tmp_path):
+    """The refactor case is why the tool appends at all. Warning about it must
+    not break it."""
+    ctx = ctx_for(tmp_path)
+    tools.copy_code(ctx, "origen.py", "salida.py", name="sencilla")
+    tools.copy_code(ctx, "origen.py", "salida.py", name="con_decorador")
+    got = (tmp_path / "salida.py").read_text(encoding="utf-8")
+    assert "def sencilla" in got and "def con_decorador" in got
