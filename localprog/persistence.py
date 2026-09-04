@@ -621,78 +621,92 @@ def _score_payload(size, channel, called, got, text, wanted, wanted_lines,
 LIMIT_LADDER = (200, 400, 800, 1600, 3200)
 
 
+def _one_payload_attempt(provider, protocol_name, schema, manual, size):
+    """One generation at one rung. Returns (survived, reason, repaired, tokens).
+
+    Split out so a rung can be SAMPLED. A single attempt is a coin flip: the
+    same engine on the same ladder measured 400, then 0, then 3200 on three
+    consecutive passes.
+    """
+    text = _payload_text(size)
+    try:
+        raw = provider.chat([
+            {"role": "system",
+             "content": "Eres un agente que trabaja llamando a herramientas." + manual},
+            {"role": "user",
+             "content": "Copia EXACTAMENTE este texto en respuesta.txt "
+                        "llamando a write_file:\n\n" + text},
+        ], schema)
+    except ProviderError as exc:
+        return False, exc.kind, None, 0
+    message = raw.get("message", {}) if isinstance(raw, dict) else {}
+    tokens = int((raw or {}).get("eval_count") or 0)
+    try:
+        call = protocol.parse(protocol_name, message)
+    except InvalidCall as exc:
+        return False, (getattr(exc, "code", "") or str(exc)[:80]), None, tokens
+    value = (call.arguments or {}).get("content") if isinstance(call.arguments, dict) else None
+    # A call that arrives with a truncated payload is not a surviving call: the
+    # tool would write the wrong file. Half is the bar, because below it the
+    # answer is unusable and above it the loss is recoverable by re-reading.
+    survived = (call.name == "write_file" and isinstance(value, str)
+                and len(value) >= size * 0.5)
+    reason = None if survived else f"content={len(value) if isinstance(value, str) else None}"
+    return survived, reason, call.repaired, tokens
+
+
 def measure_payload_limit(provider, *, protocol_name: str = "A",
-                          ladder: tuple[int, ...] = LIMIT_LADDER) -> dict:
+                          ladder: tuple[int, ...] = LIMIT_LADDER,
+                          samples: int = 3) -> dict:
     """Largest payload that survives a tool call, in characters.
 
-    Climbs the WHOLE ladder. The first version stopped at the first lost rung,
-    on the theory that the failure is a parser cliff rather than a gradient --
-    which is true for granite4.1:3b and false as a general rule. Each rung is a
-    single generation, so one stochastic miss truncated the ladder and reported
-    a limit far below the truth: phi4-mini:3.8b measured 1600 in one pass and
-    200 in the next, and qwen3.5:2b measured 400 and then 0. Protocol choice
-    depends on this number, so a number that halves on a re-run is not usable.
+    SAMPLED and exhaustive, both for the same reason: this number chooses the
+    protocol, and the first version could not choose anything.
 
-    The reported limit is the HIGHEST rung that survived, and every rung is kept
-    so a real cliff (all failures above a point) can still be told apart from
-    noise (a gap with survivors above it).
+    It stopped at the first lost rung, on the theory that the failure is a
+    parser cliff rather than a gradient. That is true for granite4.1:3b --
+    perfect at 400, empty envelope at 800, nothing above -- and false in
+    general. And each rung was one generation, so a single stochastic miss set
+    the answer: qwen3.5:2b measured 400, then 0, then 3200 on three consecutive
+    passes of the same ladder; phi4-mini:3.8b measured 1600, 200, 400.
 
-    Returns ``limit`` = the last rung that survived (0 if none did), and
-    ``ceiling_reached`` = whether the ladder ran out before the engine did, in
-    which case the true limit is at least the top rung and is not known.
+    Now every rung is climbed and sampled, ``limit`` is the highest rung a
+    majority of samples survived, and ``clean_cliff`` says whether the failures
+    are all above the survivors -- a real cliff -- or interleaved with them,
+    which is noise wearing a cliff's clothes.
     """
     schema = tools.native_schema(("write_file",)) if protocol_name == "A" else None
     manual = ""
     if protocol_name != "A":
-        manual = ("\\n" + tools.text_manual(("write_file",))
-                  + "\\n" + protocol.JSON_INSTRUCTIONS)
+        manual = ("\n" + tools.text_manual(("write_file",))
+                  + "\n" + protocol.JSON_INSTRUCTIONS)
+
     rungs = []
     limit = 0
     for size in ladder:
-        text = _payload_text(size)
-        try:
-            raw = provider.chat([
-                {"role": "system",
-                 "content": "Eres un agente que trabaja llamando a herramientas." + manual},
-                {"role": "user",
-                 "content": "Copia EXACTAMENTE este texto en respuesta.txt "
-                            f"llamando a write_file:\\n\\n{text}"},
-            ], schema)
-        except ProviderError as exc:
-            rungs.append({"size": size, "survived": False, "reason": f"{exc.kind}"})
-            break
-        message = raw.get("message", {}) if isinstance(raw, dict) else {}
-        survived = False
-        reason = None
-        repaired = None
-        try:
-            call = protocol.parse(protocol_name, message)
-            repaired = call.repaired
-            value = (call.arguments or {}).get("content") if isinstance(call.arguments, dict) else None
-            # A call that arrives with an empty or truncated payload is not a
-            # surviving call: the tool would write the wrong file. Half the
-            # payload is the bar, because below that the answer is unusable and
-            # above it the loss is recoverable by re-reading.
-            survived = (call.name == "write_file" and isinstance(value, str)
-                        and len(value) >= size * 0.5)
-            if not survived:
-                reason = f"content={len(value) if isinstance(value, str) else None}"
-        except InvalidCall as exc:
-            reason = getattr(exc, "code", "") or str(exc)[:80]
-        rungs.append({"size": size, "survived": survived, "reason": reason,
-                      "repaired": repaired,
-                      "generated_tokens": int((raw or {}).get("eval_count") or 0)})
-        if survived:
+        survived = 0
+        reason = repaired = None
+        tokens = 0
+        for _attempt in range(max(1, samples)):
+            ok, why, rep, tok = _one_payload_attempt(
+                provider, protocol_name, schema, manual, size)
+            survived += 1 if ok else 0
+            reason = why or reason
+            repaired = rep or repaired
+            tokens = tok or tokens
+        rate = survived / max(1, samples)
+        rungs.append({"size": size, "survived": rate >= 0.5, "rate": round(rate, 2),
+                      "samples": samples, "reason": reason, "repaired": repaired,
+                      "generated_tokens": tokens})
+        if rate >= 0.5:
             limit = size
-    survivors = [r["size"] for r in rungs if r["survived"]]
+
+    ok_sizes = [r["size"] for r in rungs if r["survived"]]
     lost = [r["size"] for r in rungs if not r["survived"]]
     return {
         "protocol": protocol_name,
         "limit": limit,
         "ceiling_reached": limit == ladder[-1],
-        # A cliff is every rung above a point failing. A gap with survivors
-        # above it is noise, and calling it a cliff is how a protocol gets
-        # chosen on a coin flip.
-        "clean_cliff": bool(lost) and bool(survivors) and min(lost) > max(survivors),
+        "clean_cliff": bool(lost) and bool(ok_sizes) and min(lost) > max(ok_sizes),
         "rungs": rungs,
     }
