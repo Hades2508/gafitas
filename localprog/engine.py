@@ -140,9 +140,19 @@ class EngineCapabilities:
         before this existed keeps the protocol it was certified with.
         """
         native = bool(self.supports_native_tools)
-        if (native and isinstance(self.native_payload_limit, int)
-                and self.native_payload_limit < PAYLOAD_FLOOR
-                and self.supports_text_tool_protocol):
+        text_limit = (self.text_payload_limit
+                      if isinstance(self.text_payload_limit, int) else -1)
+        native_limit = (self.native_payload_limit
+                        if isinstance(self.native_payload_limit, int) else -1)
+        if (native and native_limit >= 0
+                and native_limit < PAYLOAD_FLOOR
+                and self.supports_text_tool_protocol
+                # ...and only if the text channel is actually BETTER. Sending an
+                # engine to a narrower channel because its wide one is not wide
+                # enough is not an adaptation, it is a downgrade with a reason
+                # attached. qwen3.5:2b measures 800 native against 400 text:
+                # both under the floor, and native is twice the size.
+                and text_limit > native_limit):
             # Measured, not guessed: this engine's native channel cannot carry
             # what a real edit weighs. Choosing it anyway on the strength of
             # supports_native_tools alone is exactly the reading that cost

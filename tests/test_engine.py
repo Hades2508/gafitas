@@ -134,8 +134,29 @@ def test_supports_native_tools_is_necessary_and_not_sufficient():
     gone before the harness sees it. Fifty runs were scored against the engine
     for that. The protocol now asks how much it can carry, not whether it can."""
     granite_shaped = caps(supports_native_tools=True, native_payload_limit=800,
+                          text_payload_limit=1600,
                           supports_text_tool_protocol=True)
     assert granite_shaped.protocol == "J"
+
+
+def test_a_narrow_native_channel_is_not_swapped_for_a_narrower_text_one():
+    """Sending an engine to a smaller channel because its larger one is not
+    large enough is a downgrade with a reason attached, not an adaptation.
+
+    qwen3.5:2b measures 800 characters native against 400 text -- both under the
+    floor, and native is twice the size. The first version of this rule looked
+    only at whether native was under the floor and would have moved it to the
+    worse channel."""
+    assert caps(supports_native_tools=True, native_payload_limit=800,
+                text_payload_limit=400,
+                supports_text_tool_protocol=True).protocol == "A"
+
+
+def test_an_unmeasured_text_channel_does_not_win_by_default():
+    """UNKNOWN is not a claim of being better. An engine whose text limit was
+    never measured keeps the channel that was."""
+    assert caps(supports_native_tools=True, native_payload_limit=800,
+                supports_text_tool_protocol=True).protocol == "A"
 
 
 def test_an_engine_that_carries_a_real_payload_natively_stays_native():
