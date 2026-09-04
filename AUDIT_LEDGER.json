@@ -890,6 +890,16 @@
    "impact": "F-75 removed a real trap and the door it opened was walked through.",
    "cause": "Nothing distinguished self-correction from re-guessing.",
    "fix": "A note, never a refusal (F-63), when a third write happens with no read, search or run since the previous one. A failed lookup does not count as learning: an error is feedback about the call, not information about the code."
+  },
+  {
+   "id": "F-84",
+   "priority": "P1",
+   "component": "tools",
+   "status": "OPEN_PATCH_WRITTEN",
+   "evidence": "granite4.1:3b on frozen HEAD: reaches a symbol in 14 of 50 runs (was 2) and copy_code succeeds where it was failing, and the answers are now median 4982 characters, p90 17828, max 34408. Correct answers median 442 characters; wrong answers median 1762, with 15 of 35 over 3000. REACHED_THE_SYMBOL converts at 93%; OPENED_THE_FILE at 3%.",
+   "impact": "copy_code solved transport and created a precision problem. It copies whole classes and whole files where one function was wanted.",
+   "cause": "copy_code inherited read_symbol's behaviour on a class and not its F-70 warning -- and it needs the warning MORE, because it deliberately does not return the body, so an over-copy leaves nothing the agent can see.",
+   "fix": "PATCH WRITTEN, NOT APPLIED. Held until all three engines had run identical code: applying it mid-sweep would have made granite's numbers incomparable with the 4B's and qwen2.5-coder's. Two notes from facts the call already has -- the symbol resolved to a class, with its methods named; and the copied region is most of the file. Notes, not refusals: copying a whole class is sometimes right, and F-63 is the standing lesson about refusing things that are sometimes right."
   }
  ],
  "safety_record": {
