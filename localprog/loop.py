@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import protocol, tools
-from .errors import ERROR_NOTHING_CHANGED, HarnessInvalid, InvalidCall, ProviderError
+from .errors import ERROR_NO_TOOL_CALL, ERROR_NOTHING_CHANGED, HarnessInvalid, InvalidCall, ProviderError
 from .transcript import ELIDE_OVER_CHARS, KEEP_TURNS, Transcript, Turn
 
 MAX_TURNS = 12  # contract §C.2 -- the frozen screen's budget, unchanged.
@@ -383,6 +383,36 @@ def _signature(name: str, arguments: Any) -> str:
         return name + "|<unserialisable>"
 
 
+def _no_call_note(ctx: tools.ToolContext) -> str:
+    """Point prose at the call that expresses it.
+
+    ERROR_NO_TOOL_CALL's standing advice is "if what you wrote was the CONTENT
+    of a file, pass it as write_file(content=...)". That is right when nothing
+    has been produced yet and it is a trap once something has: the reference
+    engine spent 368 turns of 50 runs alternating prose and a redundant
+    write_file, with a correct answer already on disk and finish called in 2
+    runs out of 50.
+
+    So when the mission's expected output exists and is not empty, the
+    correction leads with finish. Otherwise it says nothing and the ordinary
+    message stands.
+    """
+    if not ctx.allowed_new_files:
+        return ""
+    for name in ctx.allowed_new_files:
+        target = ctx.root / name
+        try:
+            if not target.is_file() or target.stat().st_size <= 0:
+                return ""
+        except OSError:
+            return ""
+    return ("\n  OJO: " + ", ".join(ctx.allowed_new_files[:3]) + " YA existe y "
+            "tiene contenido. Si lo que querias decir es que has terminado, eso "
+            "NO se dice escribiendo texto ni volviendo a escribir el fichero: se "
+            "dice con finish(status='DONE'). Volver a escribir lo mismo gasta "
+            "turnos y no cambia nada.")
+
+
 def run_loop(
     *,
     provider,
@@ -475,9 +505,12 @@ def run_loop(
             except InvalidCall as exc:
                 result.invalid_calls += 1
                 consecutive_dead += 1
-                transcript.add_correction(assistant, exc.feedback())
+                feedback = exc.feedback()
+                if exc.code == ERROR_NO_TOOL_CALL:
+                    feedback += _no_call_note(ctx)
+                transcript.add_correction(assistant, feedback)
                 events.append({"turn": turn, "invalid_call": exc.code,
-                               "feedback": exc.feedback(),
+                               "feedback": feedback,
                                "consecutive_dead": consecutive_dead,
                                "prompt_tokens": turn_input})
                 last_call_was_finish = False
