@@ -106,7 +106,8 @@ OPENING_CANDIDATES = 5
 
 
 def opening_candidates(root: Path, objective: str, *,
-                       limit: int = OPENING_CANDIDATES) -> str:
+                       limit: int = OPENING_CANDIDATES,
+                       pending: tuple[str, ...] = ()) -> str:
     """The repository's own ranking of the objective, computed once, for free.
 
     Reaching the right symbol is what decides these runs -- conversion is
@@ -149,6 +150,18 @@ def opening_candidates(root: Path, objective: str, *,
         symbol = region.name or "?"
         lines.append(f"  {n}. {region.path}:{region.start}-{region.end}  "
                      f"{symbol}  |  {region.header[:70]}")
-    lines.append("  Para ver uno entero: read_symbol(path=..., name=...). "
-                 "Para buscar otra cosa: search_code(query=...).")
+    top, _score = rows[0]
+    lines.append(f"  Para ver uno entero: read_symbol(path={top.path!r}, "
+                 f"name={top.name!r}).")
+    if pending:
+        # The omission this fixes. granite4.1:3b's 21 remaining failures all
+        # WRITE the answer by hand instead of copying it, and its measured
+        # payload limit is 1600 characters, so retyping a long function
+        # corrupts it. The shortlist named read_symbol and search_code and
+        # never named the one call that moves bytes without retyping --
+        # search_code's own note has named it since F-82, and turn zero did not.
+        lines.append(f"  Para ponerlo en {pending[0]} sin reescribirlo: "
+                     f"copy_code(src={top.path!r}, into={pending[0]!r}, "
+                     f"name={top.name!r}).")
+    lines.append("  Para buscar otra cosa: search_code(query=...).")
     return "\n".join(lines)

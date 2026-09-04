@@ -350,7 +350,10 @@ def objective_text(ticket: Ticket, root: Path | None = None) -> str:
         picture = orient.repo_map(Path(root))
         if picture:
             parts += [picture, ""]
-        opening = orient.opening_candidates(Path(root), ticket.objective)
+        opening = orient.opening_candidates(
+            Path(root), ticket.objective,
+            pending=tuple(n for n in ticket.allowed_new_files
+                          if not (Path(root) / n).exists()))
         if opening:
             parts += [opening, ""]
     parts += [

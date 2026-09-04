@@ -188,3 +188,42 @@ def test_a_non_string_summary_is_still_refused(tmp_path):
     tools.write_file(ctx, "r.txt", "x\n")
     with pytest.raises(InvalidCall):
         tools.finish(ctx, summary=42, status="DONE")
+
+
+def test_turn_zero_names_copy_code_when_a_file_is_pending(tmp_path):
+    """granite4.1:3b's 21 remaining v5 failures all WRITE the answer by hand
+    instead of copying it, and its measured payload limit is 1600 characters,
+    so retyping a long function corrupts it.
+
+    The shortlist named read_symbol and search_code and never named the one
+    call that moves bytes without the engine retyping them. search_code's own
+    note has named it since F-82; turn zero did not."""
+    root = build(tmp_path)
+    out = orient.opening_candidates(
+        root, "una funcion que devuelve el impuesto aplicable a una base "
+              "segun la region del cliente",
+        pending=("respuesta.txt",))
+    assert "copy_code(src='pkg/factura.py', into='respuesta.txt'" in out
+    assert "name='calcular_impuesto'" in out
+
+
+def test_turn_zero_offers_no_copy_when_nothing_is_pending(tmp_path):
+    """An edit mission is not waiting for a new file, and offering to copy into
+    one would be advice for a mission that does not exist."""
+    root = build(tmp_path)
+    out = orient.opening_candidates(
+        root, "una funcion que devuelve el impuesto aplicable a una base segun region")
+    assert "copy_code(" not in out
+    assert "read_symbol(" in out
+
+
+def test_the_calls_turn_zero_shows_are_calls_that_work(tmp_path):
+    """A filled-in call that does not run is worse than a category, because it
+    gets copied verbatim -- which is exactly how F-85 did its damage."""
+    root = build(tmp_path)
+    ctx = tools.ToolContext(root=root, allowed_new_files=("respuesta.txt",))
+    orient.opening_candidates(root, "el impuesto aplicable a una base segun la "
+                                    "region del cliente", pending=("respuesta.txt",))
+    tools.copy_code(ctx, "pkg/factura.py", "respuesta.txt", name="calcular_impuesto")
+    written = (root / "respuesta.txt").read_text(encoding="utf-8")
+    assert written.startswith("def calcular_impuesto(base, region):")
