@@ -148,3 +148,38 @@ Construir el arnés y ejecutar el gate son decisiones distintas.
    `CONTAMINATION_NOTICE.md` y es correcto: `qwen2.5-coder:7b` marcó 0/5 con
    12/12 llamadas inválidas en las 6 runs, que es una firma de arnés, no de
    modelo. Esa evidencia se preserva y se excluye; el re-run va con id nuevo.
+
+## I15 — El motor se usa virgen. Nunca se entrena, ajusta ni adapta.
+
+GAFITAS mejora **el cuerpo**, jamás el cerebro. Un motor entra tal y como lo
+publicó quien lo hizo: sin fine-tuning, sin LoRA, sin adaptadores, sin
+destilación, sin prompts grabados en pesos, sin cuantización propia hecha para
+que un número suba.
+
+Prohibido, no desaconsejado:
+
+| prohibido | por qué |
+|---|---|
+| fine-tuning / SFT | el resultado deja de transferir a otro motor |
+| LoRA / adaptadores | lo mismo, con menos ficheros |
+| destilación a un alumno propio | eso fabrica un motor, no lo soporta |
+| cuantización a medida para subir una métrica | mide el cuantizador, no el sistema |
+| cualquier peso tocado por nosotros | deja de ser el motor que dice ser |
+
+**Por qué es la distinción y no una limitación.** Una mejora dentro de los pesos
+sirve a un motor. Una mejora dentro del arnés sirve a todos los que entren
+después, incluidos los que aún no existen. Es lo que hace que "multimotor"
+signifique algo comprobable en vez de una lista de modelos compatibles.
+
+**El contraste está medido, y no es nuestro.** TinyAgent (arXiv 2409.00608,
+Berkeley) llevó un 1.1B del 12.71% al 80% en function calling: 80.000 muestras
+sintéticas, ~500 dólares de GPT-4-Turbo generándolas, y fine-tuning. El
+resultado es excelente y pertenece a ese checkpoint. En este repo,
+granite4.1:3b fue del 4% al 60% en un día con el modelo intacto, cero llamadas
+de pago y cero pesos tocados -- y todo lo que lo consiguió (repair, legal_tools,
+copy_code, las correcciones que nombran el trabajo, el cierre limpio) está
+disponible para cualquier motor que se conecte mañana sin repetir nada.
+
+Corolario operativo: cuando un fallo parezca "el modelo no sabe", la pregunta no
+es qué entrenarle. Es qué está haciendo el arnés que se lo impide. Todos los
+defectos de esta campaña -- los nueve -- resultaron estar de este lado.

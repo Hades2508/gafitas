@@ -69,6 +69,15 @@ CONSERVATIVE_OUTPUT = 1024
 PAYLOAD_FLOOR = 1024
 
 
+#: I15. Every engine here is used exactly as its authors published it. Nothing
+#: in this module describes a model we trained, tuned, adapted or re-quantised,
+#: and nothing ever should: a capability is something an engine BROUGHT, and a
+#: registry that mixed those with capabilities we installed would stop being a
+#: description of what is available and become a description of what we happen
+#: to have built. That is also what makes a number measured here transfer to the
+#: next engine instead of belonging to one checkpoint.
+
+
 @dataclass(frozen=True)
 class EngineCapabilities:
     """What one engine can actually do, observed or declared -- never assumed."""
