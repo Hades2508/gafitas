@@ -950,6 +950,26 @@
    "impact": "Acting on external evidence without measuring it in our own system would have cost the result of the day.",
    "cause": "The v4 reading was taken before the shortlist named copy_code. External evidence about a different system is a hypothesis here, never a finding.",
    "fix": "Kept. The ablation decided it, not the argument."
+  },
+  {
+   "id": "F-90",
+   "priority": "P1",
+   "component": "my own instrument",
+   "status": "GAP_RECORDED",
+   "evidence": "MULTI_TURN_TOOL_PERSISTENCE, goal mode, 13 declared tools: qwen2.5-coder:3b scores 70% valid / 100% acceptable, no stall, no premature finish, recovery ok. granite4.1:3b scores 65% / 100% on the same probe. On the real matched task the ORDER REVERSES and the gap is enormous: granite 60%, qwen2.5-coder 32%.",
+   "impact": "The probe passes an engine that then fails the work, and ranks it ABOVE the engine that succeeds. Anything decided on the probe alone would have been decided backwards.",
+   "cause": "The probe states a goal EVERY TURN. The real mission states one objective once and requires the agent to decide the whole sequence, including when it is done. qwen2.5-coder's dominant failure is calling finish on turn 1 before reading anything -- self-direction, which neither probe mode measures. The first version's blind spot was multi-turn; this one's is open-endedness.",
+   "fix": "NOT FIXED. Recorded, because an instrument whose blind spot is known is usable and one whose blind spot is assumed away is not. A third mode -- one objective, no per-turn goal -- would measure it, and would cost a design that does not confound engagement with task difficulty."
+  },
+  {
+   "id": "F-91",
+   "priority": "P2",
+   "component": "qwen2.5-coder:3b",
+   "status": "FRONTIER_CANDIDATE",
+   "evidence": "0% -> 8 -> 12 -> 16 -> 24 -> 28 -> 36 -> 32 across the campaign, against a bare arm of 44-56%. v8: reach 17/50 converting 88%, 18 runs that open the file and convert 6%, 15 that never open it. Of those 15, 9 call finish as their FIRST action and ignore a refusal that names the exact copy_code call with its arguments filled in.",
+   "impact": "The third engine remains DEGRADED after every harness defect found for the other two was fixed.",
+   "cause": "Eliminated by measurement: protocol (J, chosen by payload limit), payload channel (repaired), tool surface (legal_tools), naming (the concrete call is given), stalling (now caught at 6 repeats), finish semantics (summary no longer required), prompt size (granite runs the identical prompt and succeeds). What is left is task engagement, and the persistence probe cannot see it -- see F-90.",
+   "fix": "NONE YET. Stated as a frontier CANDIDATE and not a frontier: the honest claim is that no further harness hypothesis has been tested, not that none exists. Cost did improve: 28s per success against 277s at v4."
   }
  ],
  "safety_record": {
