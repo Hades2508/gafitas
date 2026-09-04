@@ -1414,7 +1414,71 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
     ctx.created_files.add(rel)
     return (f"write_file aplicada en {rel}" + escape_note
             + _unreachable_note(rel, None, content)
-            + _rewrite_note(ctx, rel))
+            + _rewrite_note(ctx, rel)
+            + _mission_output_ready(ctx))
+
+
+def _mission_output_ready(ctx: ToolContext) -> str:
+    """Say that what the mission asked to be created now exists.
+
+    Measured on the reference engine: of fifty runs, 47 produced an answer and
+    5 called finish, and 325 turns -- six and a half per run -- went to
+    ERROR_NO_TOOL_CALL after the answer was already on disk. One run had the
+    correct answer at turn 3 and spent seventeen more rewriting it.
+
+    The harness knew. It had simply never been asked to say so.
+
+    Not a refusal and not an ending: the harness knows the file exists, not that
+    its contents are right, and finish() carries a status the verdict depends
+    on. Deciding the mission is over is the agent's to do.
+    """
+    if not ctx.allowed_new_files:
+        return ""
+    sizes = []
+    for name in ctx.allowed_new_files:
+        target = ctx.root / name
+        try:
+            if not target.is_file():
+                return ""
+            size = target.stat().st_size
+        except OSError:
+            return ""
+        if size <= 0:
+            return ""
+        sizes.append((name, size))
+    listed = ", ".join(f"{n} ({b} caracteres)" for n, b in sizes[:3])
+    return (f"{NEWLINE}[Ya existe lo que pedia la mision: {listed}. Si el "
+            f"contenido es el que hacia falta, CIERRA con "
+            f"finish(status='DONE', summary='<que has hecho>'). Volver a "
+            f"escribir lo mismo no cambia nada y gasta turnos.]")
+
+
+def _copied_too_much(node, name: str, src_rel: str, into_rel: str,
+                     lo: int, hi: int, total_lines: int) -> str:
+    """Say when what came back is bigger than the caller probably meant.
+
+    F-70 made read_symbol say this because a run scored 0.38 on an answer it
+    believed was exact. copy_code needs it more, not less: it does not return
+    the body, so an over-copy leaves no trace the agent can see.
+    """
+    copied = hi - lo + 1
+    if node is not None and isinstance(node, ast.ClassDef):
+        methods = [n.name for n in node.body
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        shown = ", ".join(methods[:6]) + (" ..." if len(methods) > 6 else "")
+        return (f"{NEWLINE}[OJO: {name!r} es una CLASE entera de {copied} lineas, "
+                f"no una funcion, y se ha copiado completa en {into_rel}. "
+                f"Contiene {len(methods)} metodos: {shown}."
+                f"{NEWLINE}  Si querias UNO de ellos, pidelo por su nombre: "
+                f"copy_code(src={src_rel!r}, into={into_rel!r}, "
+                f"name='{name}.{methods[0]}') -- pero borra antes lo que acabas "
+                f"de escribir o quedaran los dos.]" if methods else "")
+    if total_lines and copied >= max(40, int(total_lines * 0.6)):
+        return (f"{NEWLINE}[OJO: has copiado {copied} de las {total_lines} lineas "
+                f"de {src_rel}, es decir casi el fichero entero. Si lo que hacia "
+                f"falta era una sola definicion, pidela por su nombre con "
+                f"name= en vez de por lineas.]")
+    return ""
 
 
 def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
@@ -1489,8 +1553,9 @@ def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
             "copy_code necesita name=<simbolo> o start=/end=<lineas>." + catalogue)
 
     lines = source.splitlines()
+    node = None
     if has_name:
-        name, _node, _found, lo, hi = _symbol_span(src_rel, source, name.strip())
+        name, node, _found, lo, hi = _symbol_span(src_rel, source, name.strip())
     else:
         lo = _line_number("start", start if start is not None else 1, len(lines))
         hi = _line_number("end", end, len(lines)) if end is not None else len(lines)
@@ -1531,6 +1596,12 @@ def copy_code(ctx: ToolContext, src: Any, into: Any, name: Any = None,
         # exactly the weight this tool exists to keep out of it.
         "first_line": lines[lo - 1] if lines[lo - 1:hi] else "",
         "last_line": lines[hi - 1] if lines[lo - 1:hi] else "",
+        # The body never comes back -- that is the point of the tool -- so an
+        # over-copy would otherwise be invisible. F-70 for read_symbol, and it
+        # matters more here.
+        "note": (_copied_too_much(node, name if has_name else "", src_rel,
+                                  into_rel, lo, hi, len(lines))
+                 + _mission_output_ready(ctx)),
     }
 
 
