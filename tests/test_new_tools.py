@@ -296,8 +296,28 @@ def test_finish_rejects_an_unknown_status(ctx):
     assert "DONE" in out.feedback
 
 
-def test_finish_rejects_an_empty_summary(ctx):
-    assert call(ctx, "finish", summary="   ", status="BLOCKED").invalid_call
+def test_finish_accepts_a_status_with_no_summary_and_records_the_absence(ctx):
+    """This asserted the opposite until qwen2.5-coder:3b called
+    finish(status='DONE') and was refused 57 times in 50 matched runs.
+
+    The summary is documentation, not evidence: signal_agent_reported takes
+    finish_status for its signal and only quotes the summary in the message,
+    and I9/F-24 hold -- the agent's claim cannot create a PASS and, since ga06,
+    cannot destroy one either. Refusing the call did not protect the record, it
+    destroyed it: a run that never reaches finish seals as finish_status=None,
+    "agoto el presupuesto", INCONCLUSIVE, which says strictly less than BLOCKED
+    with an empty summary.
+
+    The contract changed on purpose and this test changed with it. What did NOT
+    change is every check that carries weight: DONE with nothing edited is still
+    refused, an unknown status is still refused, and a non-string summary is
+    still refused.
+    """
+    out = call(ctx, "finish", summary="   ", status="BLOCKED")
+    assert out.ok
+    assert ctx.finish_status == "BLOCKED"
+    assert ctx.finish_summary == ""
+    assert "sin summary" in out.value
 
 
 # ------------------------------------------------------------------ F-02

@@ -350,6 +350,9 @@ def objective_text(ticket: Ticket, root: Path | None = None) -> str:
         picture = orient.repo_map(Path(root))
         if picture:
             parts += [picture, ""]
+        opening = orient.opening_candidates(Path(root), ticket.objective)
+        if opening:
+            parts += [opening, ""]
     parts += [
         f"Puedes escribir en: {', '.join(ticket.scope.to_list())}",
         f"Tests de aceptacion: {', '.join(ticket.acceptance_tests)}",

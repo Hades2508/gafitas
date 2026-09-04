@@ -1074,6 +1074,25 @@ def _nearest_region(text: str, old: str, width: int = 12) -> str:
             f"replace_lines('{{rel}}', start, end, content) con esos numeros de linea.")
 
 
+#: How close a guess has to be before it is worth offering as a correction.
+#: 0.35 is loose enough for '_validate_percentile' -> 'is_valid_percentile',
+#: which is the real case this exists for, and tight enough that an unrelated
+#: name produces nothing rather than a confident wrong suggestion.
+_NAME_SIMILARITY = 0.35
+
+
+def _did_you_mean(guess: str, known) -> list[str]:
+    """The symbols closest to a name the caller invented.
+
+    Ranked against the CALLER'S OWN GUESS, never against the objective. That is
+    what keeps this a spelling correction rather than retrieval hiding in an
+    error message -- the distinction F-85 was about. When nothing is close
+    enough it returns nothing, and the caller gets the plain listing.
+    """
+    return difflib.get_close_matches(guess, list(known), n=4,
+                                     cutoff=_NAME_SIMILARITY)
+
+
 def _symbol_span(rel: str, source: str, name: str
                  ) -> tuple[str, Any, dict, int, int]:
     """Which lines a named symbol occupies, decorators included.
@@ -1107,12 +1126,20 @@ def _symbol_span(rel: str, source: str, name: str
                 f"Usa el nombre completo.",
             )
         else:
+            # A guess built out of the objective's words is the commonest way
+            # this fails -- granite4.1:3b asked for '_validate_percentile' 21
+            # times in 50 runs where the symbol is 'is_valid_percentile'. An
+            # alphabetical list of twenty is not an answer to that; the closest
+            # names are.
+            close = _did_you_mean(name, found)
             near = ", ".join(sorted(found)[:20]) or "(ninguno)"
-            raise ToolError(
-                ERROR_NO_MATCH,
-                f"no hay ningun simbolo {name!r} en {rel!r}.\n  Hay estos: {near}"
-                + (" ..." if len(found) > 20 else ""),
-            )
+            detail = f"no hay ningun simbolo {name!r} en {rel!r}."
+            if close:
+                detail += (f"\n  Lo mas parecido que SI existe: "
+                           f"{', '.join(repr(c) for c in close)}.")
+            detail += (f"\n  Todos los simbolos del fichero: {near}"
+                       + (" ..." if len(found) > 20 else ""))
+            raise ToolError(ERROR_NO_MATCH, detail)
 
     # Decorators sit above the def and are part of what the symbol IS.
     start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
@@ -1990,7 +2017,7 @@ def _navigation_note(ctx: ToolContext) -> str:
             f"  Mirarlos cuesta una llamada.")
 
 
-def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
+def finish(ctx: ToolContext, summary: Any = None, status: Any = "DONE") -> str:
     """End the turn deliberately, saying which kind of ending this is.
 
     F-10: ``finish`` used to refuse unless something had been edited, and the
@@ -2012,8 +2039,21 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
     nothing and believes it is done. It is told to use NO_CHANGE or BLOCKED,
     both of which are available and neither of which requires an edit.
     """
-    if not isinstance(summary, str) or not summary.strip():
-        raise InvalidCall(ERROR_BAD_ARGUMENTS, "summary debe ser una cadena no vacia")
+    # summary is documentation, not evidence. signal_agent_reported takes
+    # finish_status for the signal and only quotes the summary in its
+    # message, and I9/F-24 hold: the agent's claim cannot create a PASS and,
+    # since ga06, cannot destroy one either.
+    #
+    # It used to be REQUIRED, and qwen2.5-coder:3b hit that 57 times in 50
+    # runs with finish(status='DONE') and nothing else. Refusing there does
+    # not protect the record, it damages it: a run that never reaches finish
+    # seals as finish_status=None -- 'agoto el presupuesto', INCONCLUSIVE --
+    # which says less than DONE with an empty summary. Absence is recorded.
+    if summary is None:
+        summary = ""
+    if not isinstance(summary, str):
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "summary debe ser una cadena")
+    missing_summary = not summary.strip()
     if not isinstance(status, str):
         raise InvalidCall(ERROR_BAD_ARGUMENTS, "status debe ser una cadena")
     normalised = status.strip().upper() or "DONE"
@@ -2175,6 +2215,11 @@ def finish(ctx: ToolContext, summary: Any, status: Any = "DONE") -> str:
         )
     ctx.finish_status = normalised
     ctx.finish_summary = summary.strip()
+    if missing_summary:
+        # Recorded, not papered over: a reader can tell 'said nothing' from
+        # 'said this', and the sealed record keeps that difference.
+        return (f"FINISHED[{normalised}] (sin summary: no has dicho que has "
+                f"hecho, y eso queda asi en el registro)")
     return f"FINISHED[{normalised}]"
 
 
@@ -2198,7 +2243,7 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "copy_code": (("src", "into"), ("name", "start", "end")),
     "run": (("argv",), ("timeout",)),
     "run_tests": ((), ("node_ids",)),
-    "finish": (("summary",), ("status",)),
+    "finish": ((), ("summary", "status")),
 }
 
 _IMPL = {

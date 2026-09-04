@@ -40,6 +40,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
+from . import retrieval
 from .retrieval import walk_files
 
 #: Roughly 400 tokens. Three list_dir results cost several times this, and the
@@ -95,4 +96,59 @@ def repo_map(root: Path, *, max_chars: int = MAX_CHARS,
         # misleading one: an agent that believes it has seen everything will not
         # go looking for the rest.
         lines.append(f"  (+{hidden} directorios mas; list_dir los enumera)")
+    return "\n".join(lines)
+
+#: How many regions to rank at turn zero. Five is the shape of a shortlist: the
+#: true needle's median rank is 2 and recall@15 is 74-98% depending on language,
+#: so five buys most of the reach for a fraction of the tokens fifteen would
+#: cost in a prompt that is sent on every turn.
+OPENING_CANDIDATES = 5
+
+
+def opening_candidates(root: Path, objective: str, *,
+                       limit: int = OPENING_CANDIDATES) -> str:
+    """The repository's own ranking of the objective, computed once, for free.
+
+    Reaching the right symbol is what decides these runs -- conversion is
+    88-100% once it is named, across a 4B and two 3Bs -- and the reach rate is
+    what separates them: 34, 13 and 3 out of 50. Of granite4.1:3b's 37
+    non-reaching runs, 25 never ran a search at all, although the instructions
+    tell it to. Prose describing an action is not the action.
+
+    Ranking is arithmetic. It needs no inference, the index is already built,
+    and leaving it to the agent costs a turn that is often never spent.
+
+    Presented as a ranking and never as an answer. F-85 is the standing lesson:
+    a list that looks like a recommendation gets taken as one. This differs from
+    that catalogue in the way that matters -- it is ordered by similarity to the
+    objective rather than by position in a file -- and it still says so.
+    """
+    text = (objective or "").strip()
+    if len(text) < 40:
+        # Too short to rank against. A three-word objective produces noise, and
+        # a shortlist built from noise is worse than none.
+        return ""
+    try:
+        index = retrieval.Index(root)
+        rows = index.search(text, limit=limit)
+    except (OSError, ValueError, RecursionError):
+        # A shortlist is a convenience and a run must never fail because
+        # building one did -- but the catch is narrow on purpose. The first
+        # version caught Exception, and swallowed a NameError from a missing
+        # import for a whole debugging cycle: it returned "no candidates",
+        # which is exactly what a working index with no matches returns.
+        # A handler that cannot be told apart from success is not a handler.
+        return ""
+    if not rows:
+        return ""
+
+    lines = [f"CANDIDATOS (los {len(rows)} sitios del repositorio que mas se "
+             f"parecen a lo que pide el objetivo, ordenados por parecido y NO "
+             f"por certeza: el primero no tiene por que ser el bueno):"]
+    for n, (region, _score) in enumerate(rows, 1):
+        symbol = region.name or "?"
+        lines.append(f"  {n}. {region.path}:{region.start}-{region.end}  "
+                     f"{symbol}  |  {region.header[:70]}")
+    lines.append("  Para ver uno entero: read_symbol(path=..., name=...). "
+                 "Para buscar otra cosa: search_code(query=...).")
     return "\n".join(lines)
