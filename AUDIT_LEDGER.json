@@ -1162,6 +1162,18 @@
    "fix": "Cohort 2 is marked TIMING_CONTAMINATED and kept for CAPABILITY only. Scores, paired W/L, symbol reach, conversion, turns, tokens and real-call rate are unaffected -- contention makes a model generate more slowly, not differently -- and zero provider errors across the measured engines confirm no run died on a timeout it would otherwise have survived. Economy is re-measured afterwards on a quiet machine.",
    "risk": "The standing rule this violated: nothing else runs on the machine during a cohort. It was written for the GPU and I applied it only to the GPU. CPU contention reaches the same numbers through prompt processing and harness overhead.",
    "dependencies": "none"
+  },
+  {
+   "id": "F-108",
+   "priority": "P0",
+   "component": "gpu_guard.py / measurement environment",
+   "status": "FIXED_AND_LIMIT_RECORDED",
+   "evidence": "With every process of this campaign stopped, the machine still sits at 34-60% CPU across 29-30 worker processes: whole-disk `du -s` and `find` sweeps over every directory of D:, two tools/repro_supervisor.sh loops, a pytest run under D:\\SKINET-MODELS-ROOT, and a scan of D:\\RADAR-RUNTIME\\mirrors. None of it belongs to this campaign. No cohort has ever recorded any of it.",
+   "impact": "Every seconds-per-success, successes-per-GPU-hour and Wh-per-success figure this campaign has published was measured beside an unrecorded and varying load. Cohort 2 made it visible only because throughput fell 23% for the same engine on the same cases -- had it fallen 5% nothing would have caught it.",
+   "cause": "The rule against concurrent work was written for the GPU and enforced only for the GPU. CPU and I/O contention reach the same numbers through prompt processing and harness overhead, and the shared machine is not this campaign's to quiesce.",
+   "fix": "gpu_guard now samples the machine on the same timer it samples the card: mean and peak CPU percentage and the peak worker-process count, recorded in every thermal log beside the watts. A cohort measured beside a disk sweep is not wrong, it is a cohort with a covariate -- and the covariate now sits in the record where a reader can see it next to the seconds.",
+   "risk": "HARNESS_LIMIT, stated rather than solved: this machine cannot currently produce a quiet timing measurement. Recording the contention makes cohorts comparable to each other only when their recorded load is comparable. A genuinely clean economy figure needs the other systems paused, which is the operator's decision and not this campaign's to take.",
+   "dependencies": "F-107"
   }
  ],
  "safety_record": {
@@ -1184,7 +1196,8 @@
   "run-to-run variance on the paired net is about +-2 at n=50 (granite4.2, two cohorts, unchanged conditions); no single-cohort delta smaller than that supports a claim",
   "Phase 5 real-task runner built and its corpus reconstruction verified 9/9, not yet run: the GPU is committed to cohort 2",
   "cohort 2 TIMING_CONTAMINATED: capability usable, economy must be re-measured on a quiet machine",
-  "throughput (tokens per provider-second) is the contention detector: it does not depend on case difficulty and should be checked on every cohort"
+  "throughput (tokens per provider-second) is the contention detector: it does not depend on case difficulty and should be checked on every cohort",
+  "HARNESS_LIMIT: the measurement machine carries 34-60% foreign CPU load that this campaign cannot stop; economy figures are comparable only across cohorts with comparable recorded load"
  ],
  "objective": "Remove the paid tier from the normal programming path. Luna and Claude become construction, teaching and audit tools; they are not runtime dependencies for the supported task classes.",
  "final_measurement": {
