@@ -383,6 +383,7 @@ def run_ticket(
     num_ctx: int | None = None,
     protocol: str | None = None,
     capabilities: Any | None = None,
+    preserve_workspace: bool = False,
 ) -> WorkResult:
     """Do the ticket. One model, one workspace, one verdict.
 
@@ -650,7 +651,17 @@ def run_ticket(
         result.wall_seconds = time.perf_counter() - started
         result.patch_path = _seal(out_dir, ticket, result, outcome.events, patch,
                                   payloads=getattr(outcome, "payloads", None))
-        preserve = result.outcome not in (PASS, PASS_UNCONFIRMED, CANDIDATE)
+        # F-128. The retention policy keeps a box when the run FAILED, because
+        # that is where evidence of a defect lives. A caller that has to score
+        # the workspace itself needs the opposite guarantee, and had no way to
+        # ask for it: the Phase 5 runner could not score any GAFITAS run whose
+        # agent finished cleanly, because the box it was about to test had just
+        # been deleted for succeeding.
+        #
+        # This changes nothing about the run. Disposal happens after the loop
+        # has ended and the patch has been sealed; the agent cannot observe it.
+        preserve = preserve_workspace or result.outcome not in (
+            PASS, PASS_UNCONFIRMED, CANDIDATE)
         return result
     finally:
         # A1: a preserved box records WHAT it is, so a retention policy can tell

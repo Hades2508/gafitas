@@ -1426,6 +1426,42 @@
    "fix": "None yet. Recorded as the measurement it is.",
    "risk": "Economy is ECONOMY_CONTAMINATED for the whole cohort, declared before the first result: the machine carried 100% foreign CPU load throughout.",
    "dependencies": "F-121, F-125, F-126, F-127, F-128"
+  },
+  {
+   "id": "F-130",
+   "priority": "P1",
+   "component": "PHASE5_FROZEN_HASHES.json / my freezing discipline",
+   "status": "FIXED",
+   "evidence": "The p5r2 hash manifest was frozen at 22:19:32. The F-126 regime-test fix landed in pair_equivalence.py at 22:31:16. p5r2 wrote its first result at 23:21:21. So the manifest was frozen BEFORE a file it lists was changed, and was never re-frozen: its hash for pair_equivalence.py describes bytes that never ran.",
+   "impact": "A frozen manifest that does not describe the cohort attached to it is worse than none, because it looks like provenance. Caught by the rerun precheck, which refused to start on a hash mismatch it could not attribute to the one permitted correction.",
+   "cause": "Freezing is a moment, and I treated it as a state. The manifest was written, then a defect was found and fixed before launching, and re-freezing was not part of the sequence.",
+   "fix": "The baseline is corrected to the bytes p5r2 actually ran, with the mtime ordering recorded as the evidence and the superseded hash kept beside it. Standing rule: a manifest is frozen LAST, immediately before launch, and any change after freezing re-freezes it or aborts the run.",
+   "risk": "GATE-A-WS is not a git repository, so file provenance rests on mtimes rather than on history. That is weaker than it should be for a directory holding frozen manifests.",
+   "dependencies": "F-126"
+  },
+  {
+   "id": "F-131",
+   "priority": "P0",
+   "component": "Phase 5 rerun p5r3",
+   "status": "REPRODUCED",
+   "evidence": "granite4.1:3b, the same nine certified tasks, only F-128 changed. BARE 0/9. GAFITAS 0/9. W=0 L=0 T--=9. DIRECT_REPLAY_AGREEMENT = 18/18, every run SCORING_CONSISTENT_FAIL, zero divergences, zero recoveries needed. Pair verdicts 7 EQUIVALENT and 2 ECONOMY_CONTAMINATED, 0 PAIR_INVALID, 0 PAIR_INCOMPLETE. Evidence 9 tickets, 60 references, 60 recoverable, 0 mismatched. Human code intervention 0.",
+   "impact": "The 1/9 of p5r2 did NOT reproduce. Eight of nine tasks are STABLE across the two cohorts and ga06 FLIPPED from SUCCESS to FAIL. Across 18 pairs and 36 runs the bare engine has produced zero correct patches and GAFITAS exactly one. Amplification is not demonstrated; degradation is not demonstrated either, since GAFITAS has never lost a pair.",
+   "cause": "ga06 is a task this engine solves intermittently. F-128 did not cause the flip: in p5r2 that verdict was recovered honestly from the agent's own sealed writes, and here, with the box preserved and both routes agreeing, the agent wrote something that fails. Two observations do not estimate a rate.",
+   "fix": "None. Recorded as the measurement it is.",
+   "risk": "The single previous success was treated cautiously as WEAK_SIGNAL and that caution was warranted. Any future single-cohort number on this bank should be read the same way.",
+   "dependencies": "F-128, F-129"
+  },
+  {
+   "id": "F-132",
+   "priority": "P0",
+   "component": "localprog loop / edit conversion",
+   "status": "REPRODUCED",
+   "evidence": "p5r3 GAFITAS failures by first demonstrated cause: NO_CHANGE_PRODUCED 5, BUDGET_EXHAUSTED 1, STALLED_NO_USABLE_CALL 1, TESTS_FAILED 2. Seven of nine failures are the loop never converting turns into an edit; two are code produced and wrong. In p5r2 the same split was 5 and 3. The bare arm's profile is the opposite and identical across both cohorts: 4 TESTS_ERROR and 5 TESTS_FAILED -- it always writes something and it is always wrong.",
+   "impact": "The dominant obstacle on real tasks is not that the engine lacks the answer. It is that the harness does not get an edit out of it. That is the largest identified headroom and it is ours.",
+   "cause": "Not yet diagnosed. Measured twice before being touched, which was the point of running the rerun before improving anything.",
+   "fix": "None yet, deliberately. The rerun existed to measure.",
+   "risk": "NO_CHANGE_PRODUCED rose from 2 to 5 between cohorts while the verdicts stayed stable, so the trajectory is far noisier than the outcome. A fix aimed at it must be validated on more than one cohort.",
+   "dependencies": "F-129, F-131"
   }
  ],
  "safety_record": {
