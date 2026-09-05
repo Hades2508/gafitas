@@ -1203,12 +1203,12 @@
    "id": "F-111",
    "priority": "P1",
    "component": "localprog/engine.py working_output",
-   "status": "PARTIALLY_RESOLVED",
-   "evidence": "Cohort 3 bare-arm cap-hits: 0/50 for ministral, granite4.1 and qwen3:4b; 1/50 phi4-mini; 3/50 granite4.2; 4/50 gemma3; and 24/50 for qwen3.5:2b.",
-   "impact": "Six engines are no longer truncated. The seventh still is in half its cases, so its +14 is NOT an established amplification.",
-   "cause": "working_output is a quarter of the served context, 8192 at 32768. A reasoning engine spends one budget on thinking and answering, and this one needs more than 8192 for both.",
-   "fix": "NOT YET, and deliberately not by raising the ratio: the quarter exists so nothing is asked to produce more than it can hold beside its prompt. The lever is the served context itself, and it costs VRAM that has not been measured. Recorded rather than guessed at, which is the difference between this and the 1024 it replaced.",
-   "risk": "Any comparison involving that engine's bare arm is an upper bound on its ability, in the direction that flatters GAFITAS.",
+   "status": "FALSIFIED",
+   "evidence": "WITHDRAWN AND RECORDED AS WITHDRAWN. The original entry read: 'Cohort 3 bare-arm cap-hits: 0/50 for ministral, granite4.1 and qwen3:4b; 1/50 phi4-mini; 3/50 granite4.2; 4/50 gemma3; and 24/50 for qwen3.5:2b.' The 24/50 does not reproduce. The bare records carry NO token usage -- language, model, name, needle offsets, output, position_ratio, repo and nothing else -- so no bare cap-hit can have been read directly, and whatever proxy produced that number over-counted. Re-measured structurally against the same sealed answers: qwen3.5:2b has 2 of 50 answers long enough for an 8192-token budget to explain, 12 that stop early at lengths it cannot, and 4 that are complete but left a fence open by echoing the prompt's terminator. Its median bare answer is 2636 characters.",
+   "impact": "The claim built on it -- that qwen3.5:2b's +28 is not an established amplification because its bare arm was truncated -- does not stand. At most 2 of its 46 bare failures are attributable to the budget.",
+   "cause": "A proxy for truncation was used without being validated against the answers it classified. My first pass at the structural detector made the same error in the other direction and read 32% off one verdict before looking: of the first four inspected, two were genuine mid-expression stops, one was a 312-character stop no budget explains, and one was a COMPLETE answer. A detector that cannot separate those cannot support a claim about a budget.",
+   "fix": "bare_truncation.py classifies into LONG_AND_UNTERMINATED, SHORT_AND_UNTERMINATED and ECHOED_DELIMITER rather than returning one verdict, and only the first can be the budget. Superseded by F-120.",
+   "risk": "Recorded as a standing rule: a proxy metric must be validated against the individual cases it classifies before any count from it is published. Both of my errors here were caught by reading four examples.",
    "dependencies": "F-95, F-101"
   },
   {
@@ -1306,6 +1306,18 @@
    "fix": "reasoning_head (400 chars) and reasoning_tail (1200) sealed, with reasoning_elided stating what was dropped. The tail is the larger of the two because a model that settled on a call settled at the end. Bounded because one turn reached 41 223 characters and a cohort's evidence must not become mostly deliberation. 5 tests. This makes the question ASKABLE next cohort; it does not answer it.",
    "risk": "Deliberately does NOT act on the reasoning channel. Reasoning is deliberation, and executing a call the model mentioned while thinking would run something it may have decided against. Measure first.",
    "dependencies": "F-95, F-100, F-101"
+  },
+  {
+   "id": "F-120",
+   "priority": "P1",
+   "component": "localprog/engine.py EngineCapabilities",
+   "status": "FIXED",
+   "evidence": "F-101's residual question -- is a quarter of the served context ENOUGH -- answered from sealed evidence, no engine invoked. GAFITAS arm: the output budget was hit on 2 of qwen3.5:2b's 547 reasoning turns and 8 of granite4.2:3b's 278; no other engine emits a reasoning channel at all. Reasoning spend, measured in real output tokens rather than converted from characters: qwen3.5 p50 161 / p90 578, granite4.2 p50 1412 / p90 4083, against a budget of 8192. Bare arm, classified structurally: of 350 answers only 6 are long enough for an 8192-token budget to explain them (4 gemma3, 2 qwen3.5), 17 stop early at lengths no budget explains, and 6 are COMPLETE answers that echoed the prompt's own closing delimiter.",
+   "impact": "F-101 closes with a NEGATIVE result: at 8192 the budget is not what limits these engines on this corpus, on either arm. That removes the standing caveat that no cohort is fair until the budget is settled.",
+   "cause": "The budget was raised to a quarter of the served context by F-101 and that was enough. What remained was that nothing MEASURED whether it was, so the caveat could not be retired.",
+   "fix": "measured_reasoning_tokens (declared only from sealed telemetry, never from a family or a name), plus output_shortfall(), output_is_sufficient() and served_context_for(). The budget itself does NOT move: raising it on the strength of a measurement of the symptom would be tuning. What moves is visibility -- a deployment that cannot afford an engine's deliberation plus an answer now says so, and states the served context that would close it, instead of the run being recorded as the engine failing. output_is_sufficient() is three-valued: None means never measured, which is not the same as fine, and collapsing those two is how F-101 survived two cohorts. 15 tests, including that the verdict is identical for four engine names and that emits_reasoning_channel does not decide it.",
+   "risk": "measured_reasoning_tokens could be declared from a guess. Its docstring and this record both state the only admissible source; nothing enforces it mechanically.",
+   "dependencies": "F-95, F-101, F-111, F-119"
   }
  ],
  "safety_record": {

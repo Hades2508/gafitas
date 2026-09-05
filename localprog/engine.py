@@ -135,6 +135,18 @@ class EngineCapabilities:
     #: out loud must be able to afford the thought AND the call, and
     #: granite4.2:3b lost 70% of its turns to a budget that only covered one.
     emits_reasoning_channel: bool | None = UNKNOWN
+    #: F-120. How many tokens this engine has been MEASURED to spend before it
+    #: answers, at the high end rather than the median -- a budget has to cover
+    #: a bad turn, not a typical one. Declared only from sealed telemetry, never
+    #: from a family, a name or a parameter count.
+    #:
+    #: It does not change the budget. `working_output()` is bounded by a quarter
+    #: of the served context and that bound is principled; raising it on the
+    #: strength of a measurement of the symptom would be tuning. What this does
+    #: is make the shortfall VISIBLE, so a run whose budget cannot cover the
+    #: engine's own deliberation plus an answer says so instead of being
+    #: recorded as the engine failing.
+    measured_reasoning_tokens: int | None = UNKNOWN
     structured_output: bool | None = UNKNOWN
     streaming: bool | None = UNKNOWN
     #: Does the server report token counts? Without this, cost is unmeasurable
@@ -234,6 +246,52 @@ class EngineCapabilities:
         # served context, so nothing is asked to produce more than it can hold
         # beside its own prompt. The guess underneath it goes.
         return ceiling
+
+    #: What an answer needs after the thinking is paid for. Not a guess about
+    #: any engine: it is the size of the largest single artefact the tool
+    #: surface can be asked to emit in one call, which is a property of the
+    #: harness, not of a model.
+    ANSWER_ALLOWANCE = 1024
+
+    def output_shortfall(self) -> int:
+        """Tokens by which this deployment's budget falls short, or 0.
+
+        F-120. Every engine in the campaign is served 32768 and so gets 8192
+        output, and one of them still ends 16 of 50 bare answers in a state a
+        finished answer does not reach -- at 8192 tokens, which is far more
+        than any answer asked for. The budget is not too small for the ANSWER.
+        It is too small for the answer plus what that engine spends before it.
+
+        Returns 0 when nothing has been measured. An unmeasured engine is not
+        declared healthy here; it is declared unmeasured, and the caller can
+        tell the two apart because the measurement is a field it can read.
+        """
+        if not self.measured_reasoning_tokens:
+            return 0
+        needed = self.measured_reasoning_tokens + self.ANSWER_ALLOWANCE
+        return max(needed - self.working_output(), 0)
+
+    def output_is_sufficient(self) -> bool | None:
+        """True, False, or None when it has never been measured.
+
+        Three-valued on purpose. Collapsing "measured and fine" with "never
+        looked" is how F-101 survived two cohorts.
+        """
+        if not self.measured_reasoning_tokens:
+            return None
+        return self.output_shortfall() == 0
+
+    def served_context_for(self, shortfall: int | None = None) -> int:
+        """The served context that would close the shortfall.
+
+        Stated, not applied. Raising a served context costs VRAM that has not
+        been measured, and that is the operator's call and a GPU question.
+        This exists so the recommendation is arithmetic rather than a feeling.
+        """
+        gap = self.output_shortfall() if shortfall is None else shortfall
+        if gap <= 0:
+            return self.working_context()
+        return (self.working_output() + gap) * 4
 
     def to_dict(self) -> dict:
         out = asdict(self)
