@@ -895,11 +895,11 @@
    "id": "F-84",
    "priority": "P1",
    "component": "tools",
-   "status": "OPEN_PATCH_WRITTEN",
+   "status": "FIXED",
    "evidence": "granite4.1:3b on frozen HEAD: reaches a symbol in 14 of 50 runs (was 2) and copy_code succeeds where it was failing, and the answers are now median 4982 characters, p90 17828, max 34408. Correct answers median 442 characters; wrong answers median 1762, with 15 of 35 over 3000. REACHED_THE_SYMBOL converts at 93%; OPENED_THE_FILE at 3%.",
    "impact": "copy_code solved transport and created a precision problem. It copies whole classes and whole files where one function was wanted.",
    "cause": "copy_code inherited read_symbol's behaviour on a class and not its F-70 warning -- and it needs the warning MORE, because it deliberately does not return the body, so an over-copy leaves nothing the agent can see.",
-   "fix": "PATCH WRITTEN, NOT APPLIED. Held until all three engines had run identical code: applying it mid-sweep would have made granite's numbers incomparable with the 4B's and qwen2.5-coder's. Two notes from facts the call already has -- the symbol resolved to a class, with its methods named; and the copied region is most of the file. Notes, not refusals: copying a whole class is sometimes right, and F-63 is the standing lesson about refusing things that are sometimes right."
+   "fix": "PATCH WRITTEN, NOT APPLIED. Held until all three engines had run identical code: applying it mid-sweep would have made granite's numbers incomparable with the 4B's and qwen2.5-coder's. Two notes from facts the call already has -- the symbol resolved to a class, with its methods named; and the copied region is most of the file. Notes, not refusals: copying a whole class is sometimes right, and F-63 is the standing lesson about refusing things that are sometimes right. APPLIED as F-93 once the sweep that required frozen code had finished; agreement between name= and start=/end= is now completed and disagreement still refused."
   },
   {
    "id": "F-85",
@@ -1083,11 +1083,11 @@
    "id": "F-101",
    "priority": "P1",
    "component": "localprog/loop.py, run_matched.py",
-   "status": "DETECTED_NOT_ACTED_ON",
+   "status": "FIXED",
    "evidence": "The moment per-call usage landed: gemma3:4b's bare arm produced exactly 1024 of 1024 tokens on 6 of 6 smoke cases, and 9 of 10 on a second run. Its clean-cohort bare score of 7/50 is therefore not a measurement of what it knows.",
    "impact": "F-95 raised the output budget only for engines with an observed reasoning channel. This engine has none and was being truncated anyway, so that rule was half the rule. Any comparison against a truncated bare arm flatters GAFITAS.",
    "cause": "CONSERVATIVE_OUTPUT is 1024 and it is the harness's own guess for engines that declare no limit. It is too small for a task whose answer is a function reproduced verbatim.",
-   "fix": "NOT YET. Truncation is now recorded on both arms so it can be counted rather than inferred, and a ladder measures the smallest budget at which cap-hits reach zero. Picking a bigger number before measuring would be the same mistake in the other direction, which is exactly how F-95 ended up covering half the engines it needed to.",
+   "fix": "RESOLVED. Measured with a ladder on the real bare-arm prompt: cap-hits per budget were 0/8 at 1024 for one engine, 3/8 for the reference engine and 8/8 for a third. CONSERVATIVE_OUTPUT no longer governs working_output(); the context quarter, which was always the principled bound, now does. A declared max_output_tokens still wins. Verified in cohort 3: granite4.1's bare arm hit the cap 0 times in 20.",
    "risk": "Until this is settled the next cohort cannot be called fair for any engine whose bare arm truncates.",
    "dependencies": "F-95, F-100"
   },
@@ -1190,14 +1190,17 @@
   "Explorer never demonstrated as needed, so never integrated",
   "F-96 invalidates the five-engine expansion cohort's deltas; the cohort is preserved and excluded from conclusions",
   "latency cost of the F-95 reasoning budget is measured but not yet optimised",
-  "F-101 unresolved: the bare arm truncates at 1024 for at least one engine, so no cohort is fair for it until the budget is settled by measurement",
   "qwen3:4b's 316 dead turns remain unexplained; the tool role is NOT the cause (7 of 8 engines read it correctly) and the sealed emission text now exists to diagnose them",
   "every pre-F-101 amplification figure is an upper bound; the bias is measured at roughly 40% of net advantage on one 20-case sample",
   "run-to-run variance on the paired net is about +-2 at n=50 (granite4.2, two cohorts, unchanged conditions); no single-cohort delta smaller than that supports a claim",
-  "Phase 5 real-task runner built and its corpus reconstruction verified 9/9, not yet run: the GPU is committed to cohort 2",
-  "cohort 2 TIMING_CONTAMINATED: capability usable, economy must be re-measured on a quiet machine",
   "throughput (tokens per provider-second) is the contention detector: it does not depend on case difficulty and should be checked on every cohort",
-  "HARNESS_LIMIT: the measurement machine carries 34-60% foreign CPU load that this campaign cannot stop; economy figures are comparable only across cohorts with comparable recorded load"
+  "HARNESS_LIMIT: the measurement machine carries 34-60% foreign CPU load that this campaign cannot stop; economy figures are comparable only across cohorts with comparable recorded load",
+  "PHI4MINI_DEGRADED: phi4-mini:3.8b loses 28 of 50 cases it answers correctly bare (cohort 3, p=4.6e-06). Largest degradation measured. Undiagnosed.",
+  "MINISTRAL_DEGRADED: ministral-3:3b loses 14 and wins 2 (cohort 3, p=0.0042). Degraded in both clean cohorts. Undiagnosed.",
+  "QWEN3_4B_NO_CLEAN_FINISH: scores 80% while closing the loop 8% of the time, 61% real-call rate. The sealed no-call text now exists and has not been read.",
+  "Phase 5 real-task runner and Phase 3 multi-language sweep are built and verified and have NOT been run.",
+  "GDDR6X memory temperature is not observable on this card, so the component most at risk from sustained load is unmeasured.",
+  "the cumulative SW-thermal-slowdown counter is not recorded per cohort, so it is unknown whether any measurement ran on a thermally limited card."
  ],
  "objective": "Remove the paid tier from the normal programming path. Luna and Claude become construction, teaching and audit tools; they are not runtime dependencies for the supported task classes.",
  "final_measurement": {
