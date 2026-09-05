@@ -1150,6 +1150,18 @@
    "fix": "Verification compares the OUTCOME SHAPE the corpus recorded in its own tail -- error and failure counts -- plus the invariant that must hold under any instrument: the suite does not pass. Recorded as a standing rule rather than a one-off: an exit code is not a stable identity for a state.",
    "risk": "none",
    "dependencies": "F-96, F-103"
+  },
+  {
+   "id": "F-107",
+   "priority": "P0",
+   "component": "cohort 2 measurement discipline",
+   "status": "CONTAMINATION_RECORDED",
+   "evidence": "Throughput, which is independent of case difficulty and of how many tokens a model chooses to emit, fell for the same engine on the same 50 cases: granite4.2:3b 127.0 tok/s in cohort 1 against 98.2 tok/s in cohort 2, a 23% slowdown. Within cohort 2 it is not uniform -- the first 25 cases ran at 1.91x cohort 1's per-case time and the last 25 at 0.98x. On qwen3.5:2b the boundary falls at case 10: 0.94x before, 1.29x after, which is when repeated pytest runs across nine repositories were validating the real-task corpus. Thermal peak also rose 81C to 84C.",
+   "impact": "Every TIMING figure in cohort 2 is unusable: seconds per success, successes per GPU-hour, Wh per success, latency ratio. Not only against cohort 1 but against itself, because the contention was not uniform across the run.",
+   "cause": "I built and validated the Phase 5 real-task corpus WHILE the cohort was measuring. Repeated pytest invocations across nine repositories competed for CPU with the harness and with the model server's prompt processing. The operator caught it; I did not.",
+   "fix": "Cohort 2 is marked TIMING_CONTAMINATED and kept for CAPABILITY only. Scores, paired W/L, symbol reach, conversion, turns, tokens and real-call rate are unaffected -- contention makes a model generate more slowly, not differently -- and zero provider errors across the measured engines confirm no run died on a timeout it would otherwise have survived. Economy is re-measured afterwards on a quiet machine.",
+   "risk": "The standing rule this violated: nothing else runs on the machine during a cohort. It was written for the GPU and I applied it only to the GPU. CPU contention reaches the same numbers through prompt processing and harness overhead.",
+   "dependencies": "none"
   }
  ],
  "safety_record": {
@@ -1170,7 +1182,9 @@
   "qwen3:4b's 316 dead turns remain unexplained; the tool role is NOT the cause (7 of 8 engines read it correctly) and the sealed emission text now exists to diagnose them",
   "every pre-F-101 amplification figure is an upper bound; the bias is measured at roughly 40% of net advantage on one 20-case sample",
   "run-to-run variance on the paired net is about +-2 at n=50 (granite4.2, two cohorts, unchanged conditions); no single-cohort delta smaller than that supports a claim",
-  "Phase 5 real-task runner built and its corpus reconstruction verified 9/9, not yet run: the GPU is committed to cohort 2"
+  "Phase 5 real-task runner built and its corpus reconstruction verified 9/9, not yet run: the GPU is committed to cohort 2",
+  "cohort 2 TIMING_CONTAMINATED: capability usable, economy must be re-measured on a quiet machine",
+  "throughput (tokens per provider-second) is the contention detector: it does not depend on case difficulty and should be checked on every cohort"
  ],
  "objective": "Remove the paid tier from the normal programming path. Luna and Claude become construction, teaching and audit tools; they are not runtime dependencies for the supported task classes.",
  "final_measurement": {
