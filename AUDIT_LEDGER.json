@@ -1119,12 +1119,12 @@
    "id": "F-104",
    "priority": "P0",
    "component": "campaign methodology",
-   "status": "QUANTIFIED",
+   "status": "PARTIALLY_FALSIFIED",
    "evidence": "granite4.1:3b, the same 20 needles, differing only in the bare arm's output budget. At 1024 (the campaign's setting): bare 6, GAFITAS 11, W=8 L=3, net +5, with cap-hits measured at 3 of 8 on a separate ladder. At 8192: bare 9, GAFITAS 12, W=6 L=3, net +3, cap-hits 0 of 20.",
-   "impact": "About 40% of the measured net advantage on this sample was the harness truncating the bare arm, not GAFITAS improving on it. Every amplification figure this campaign has published is overstated by an amount of this order. The amplification SURVIVES -- +3 net, and the GAFITAS arm improved too, 11 to 12 -- but it is smaller than reported.",
+   "impact": "The MECHANISM is real and measured: granite4.1's bare arm hit the output cap in 3 of 8 cases and now hits it in 0 of 20. The SIZE I attributed to it -- roughly 40% of the net advantage -- does not survive. Cohort 2 gave a variance estimate I did not have when I wrote this: granite4.2:3b, same 50 cases, ESSENTIALLY IDENTICAL conditions between cohorts (it was already at 8192 on both arms, so neither F-101 nor F-102 touched it), moved bare 39->41 and net +4->+2. That is the same magnitude as the change I had credited to removing truncation on a different engine at n=20. So the +5->+3 shift is not distinguishable from run-to-run noise.",
    "cause": "F-101. CONSERVATIVE_OUTPUT of 1024 cut off the bare arm, which answers in one long generation, while never binding the GAFITAS arm, which spends a median 46 tokens per call.",
-   "fix": "The budget is fixed (F-101). This entry exists to record the SIZE of the bias rather than only its direction, and to state that every prior cohort's delta is now known to be inflated. n=20: indicative, not definitive. The next full cohort measures it properly, and it records cap-hits on both arms so this can never again be invisible.",
-   "risk": "Prior published deltas must be read as upper bounds until the next cohort lands.",
+   "fix": "The budget fix stands on its own evidence -- cap-hits measured before and after. What is withdrawn is the quantification. Prior deltas remain upper bounds because the truncation was real, but 'about 40%' was me converting one 20-case difference into a number before I knew what a 50-case rerun does on its own.",
+   "risk": "Recorded as a lesson: a before/after difference is not an effect size until the null rerun is measured. Cohort 2 supplies that null for one engine and it is +-2 on the net at n=50.",
    "dependencies": "F-96, F-100, F-101"
   }
  ],
@@ -1144,7 +1144,8 @@
   "latency cost of the F-95 reasoning budget is measured but not yet optimised",
   "F-101 unresolved: the bare arm truncates at 1024 for at least one engine, so no cohort is fair for it until the budget is settled by measurement",
   "qwen3:4b's 316 dead turns remain unexplained; the tool role is NOT the cause (7 of 8 engines read it correctly) and the sealed emission text now exists to diagnose them",
-  "every pre-F-101 amplification figure is an upper bound; the bias is measured at roughly 40% of net advantage on one 20-case sample"
+  "every pre-F-101 amplification figure is an upper bound; the bias is measured at roughly 40% of net advantage on one 20-case sample",
+  "run-to-run variance on the paired net is about +-2 at n=50 (granite4.2, two cohorts, unchanged conditions); no single-cohort delta smaller than that supports a claim"
  ],
  "objective": "Remove the paid tier from the normal programming path. Luna and Claude become construction, teaching and audit tools; they are not runtime dependencies for the supported task classes.",
  "final_measurement": {
