@@ -733,6 +733,19 @@ def _seal(out_dir: Path | None, ticket: Ticket, result: WorkResult,
             if not body.exists():
                 body.write_text(text, encoding="utf-8")
 
+    # F-114. Verify the seal that was just written, against its own sidecar.
+    # The reading side of evidence integrity existed and had no caller: the
+    # seals were verifiable and had never been verified. Checking here costs one
+    # pass over one ticket and turns "the evidence is sound" from an assumption
+    # into a recorded fact -- and a broken seal is a HARNESS defect, so it is
+    # noted on the result rather than blamed on the run.
+    sealed = evidence.verify_ticket(target / f"{stem}.json", target)
+    if not sealed["intact"]:
+        result.notes.append(
+            f"EVIDENCE_SEAL_BROKEN: {len(sealed['missing'])} payload(s) missing, "
+            f"{len(sealed['mismatched'])} with a hash that does not match. "
+            f"This ticket's own record cannot be fully reconstructed.")
+
     patch_path = None
     if patch and patch != "(sin cambios)":
         patch_file = target / f"{stem}.patch"

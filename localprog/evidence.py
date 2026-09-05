@@ -119,6 +119,68 @@ def read_payload(directory: Path, digest: str) -> str | None:
         return None
 
 
+def verify_ticket(ticket: Path, directory: Path) -> dict:
+    """Check ONE sealed ticket against the payload sidecar beside it.
+
+    Split out so sealing can verify what it just wrote without walking the whole
+    cohort: the cost is one pass over one file, which is cheap enough to do
+    every time, and a check that is cheap enough to always run is worth more
+    than a thorough one somebody has to remember.
+    """
+    report = {"references": 0, "recoverable": 0, "missing": [], "mismatched": []}
+    try:
+        body = json.loads(Path(ticket).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        report["intact"] = True          # nothing sealed, nothing to verify
+        return report
+    for event in body.get("events") or []:
+        arguments = event.get("args")
+        if not isinstance(arguments, dict):
+            continue
+        for key, value in arguments.items():
+            if not (isinstance(value, dict) and "sha256" in value):
+                continue
+            report["references"] += 1
+            text = read_payload(directory, value["sha256"])
+            where = f"{Path(ticket).name}:{event.get('turn')}:{key}"
+            if text is None:
+                report["missing"].append(where)
+            elif sha256_text(text).split(":", 1)[1] != value["sha256"]:
+                report["mismatched"].append(where)
+            else:
+                report["recoverable"] += 1
+    report["intact"] = not report["missing"] and not report["mismatched"]
+    return report
+
+
+def verify(directory: Path) -> dict:
+    """Check every sealed ticket against its own payload sidecar (F-114).
+
+    An argument too long to sit inline is replaced in the event by
+    ``{truncated, chars, sha256}`` and the full text goes to ``payloads/``. The
+    reading side of that has existed since the sidecar did and had NO CALLER --
+    not in this package, not in the tests, not in any benchmark script. The
+    seals were verifiable and had never been verified, which is a strange thing
+    to discover about an evidence system.
+
+    Returns counts rather than raising: a cohort with a broken seal is a fact to
+    record, and a verifier that stops at the first one cannot tell you how bad
+    it is.
+    """
+    directory = Path(directory)
+    report = {"tickets": 0, "references": 0, "recoverable": 0,
+              "missing": [], "mismatched": []}
+    for ticket in sorted(directory.glob("*.json")):
+        one = verify_ticket(ticket, directory)
+        report["tickets"] += 1
+        report["references"] += one["references"]
+        report["recoverable"] += one["recoverable"]
+        report["missing"] += one["missing"]
+        report["mismatched"] += one["mismatched"]
+    report["intact"] = not report["missing"] and not report["mismatched"]
+    return report
+
+
 def harness_invalid_notice(directory: Path, *, runs: list[dict]) -> Path:
     """Announce contamination in the cohort's own directory."""
     directory.mkdir(parents=True, exist_ok=True)
