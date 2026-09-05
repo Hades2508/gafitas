@@ -1246,6 +1246,66 @@
    "fix": "persistence.py 0% -> 51% covering the decision path (ladder climbed, rungs sampled, cliff told from noise, half-arrived payload not a survival, provider error named). cli.py 0% -> 44%, and writing those tests found an undocumented preflight that refuses an uninstalled model before reading a ticket. certify.py 0% -> 64%, including the assertion that its fixture actually FAILS before the fix -- the same trap the real-task corpus fell into. evidence.verify_ticket() is now called by _seal on every ticket, so the seals verify themselves instead of being verifiable and unverified. Package total 77% -> 86%.",
    "risk": "An instrument that makes decisions and has no tests can drift without anything noticing.",
    "dependencies": "F-90"
+  },
+  {
+   "id": "F-115",
+   "priority": "P0",
+   "component": "localprog/orient.py opening_candidates",
+   "status": "REPRODUCED",
+   "evidence": "The turn-zero shortlist is a CONSTANT across all seven cohort-3 engines -- the ranking is arithmetic over a deterministic index and depends only on the objective, so every engine opened on the same five candidates: recall@1 18/50, recall@5 32/50, identical in all seven runs. Reconstructed offline byte-for-byte by anchor_audit.py; no engine invoked. In the bare-win/GAFITAS-loss cases the biggest bucket is NOT the shortlist anchoring the model onto a listed-but-wrong candidate (ANCHORED, 0-40%, median 21%) but the target being ABSENT from the shortlist entirely (NOT_RETRIEVED, 39-100%, median 64%), and it is the biggest bucket in every single engine.",
+   "impact": "This PARTIALLY FALSIFIES F-110's framing. F-110 recorded the shortlist's rank-1 candidate as the cause of the wrong copies, and the share taking it is real (ministral 6/8, granite4.2 6/9, granite4.1 9/20, phi4-mini 7/17). But the shortlist is identical for the engines that IMPROVE and the engines that DEGRADE, so it cannot by itself explain a -25 in one and a +28 in another. What it explains is a shared floor: with the answer absent from the list, a run's success depends on the engine leaving the list, and that is where the engines differ.",
+   "cause": "The ranking scores every region in the repository. It never noticed that the objective contained a path which RESOLVES to a real file in that repository, so regions the objective had already ruled out competed for all five slots. On a corpus where the objective names the file every single time, 18 of 50 runs opened on a shortlist that held nothing from that file (7) or held it only under a different symbol (11) -- exactly the NOT_RETRIEVED count.",
+   "fix": "See F-118, which is the correction. This entry is the diagnosis.",
+   "risk": "Recorded as a standing correction to my own method: a factor that is CONSTANT across arms cannot be the cause of a difference between them, however large its absolute effect. F-110's share statistics were right and the inference from them was not.",
+   "dependencies": "F-85, F-110"
+  },
+  {
+   "id": "F-116",
+   "priority": "P0",
+   "component": "localprog/tools.py dispatch",
+   "status": "FIXED",
+   "evidence": "Six of the seven file tools call the file `path`. copy_code alone calls it `src`. phi4-mini emitted copy_code(path=..., name='contain_symbolic_var', start=69, end=...) -- right tool, right file, right symbol, right lines -- and was refused ERROR_MISSING_ARGUMENT, then repeated the identical call on turns 4, 8 and 9 of the same run. Across cohort 3, 30 of 81 missing-argument refusals (37%) become valid calls under the synonym table, touching 19 runs in four engines; 24 of the 30 are copy_code path -> src. qwen3.5:2b alone gains 23 across 17 runs.",
+   "impact": "Runs lost, and recorded against the model, for a name the harness itself is inconsistent about. This is I16 in its purest form: the aid destroys an action the engine performed correctly.",
+   "cause": "Two names for one concept in adjacent tools, and no reconciliation.",
+   "fix": "tools.SYNONYMS plus apply_synonyms(), applied in dispatch before the required-argument check. A synonym is taken ONLY when the real name is absent and the synonym present; a call supplying both is left untouched rather than merged. The rename is REPORTED back to the agent, because one that is not told the right name will spell it the same way next turn. An import-time assertion pins the table to SPECS so it cannot drift onto a parameter that no longer exists. 15 tests.",
+   "risk": "An alias could shadow a real parameter of the same tool. Refused at import rather than at run time.",
+   "dependencies": ""
+  },
+  {
+   "id": "F-117",
+   "priority": "P0",
+   "component": "localprog/tools.py finish",
+   "status": "FIXED",
+   "evidence": "ministral-3:3b scores 92% bare and 68% through GAFITAS. Of its 56 invalid calls in cohort 3, 44 are ERROR_BAD_ARGUMENTS, and 38 of those 44 (86%) are the identical string status='DONE\"}\\n```'. It wrote a well-formed finish inside a fenced JSON block and the argument value carried the block's closers out with it. Two of its 14 losses are classified FINISH_REFUSED with six and seven refusals apiece.",
+   "impact": "The single largest identified mechanism behind the canary's -24. A correct terminal call, refused as an unknown status, in runs that had already produced the answer.",
+   "cause": "status.strip().upper() normalises whitespace and case and nothing else. The value was the enum member plus the punctuation that closed the wrapper it was written in.",
+   "fix": "tools._enum_member(): the value must START with exactly one member of a CLOSED enum and everything after it must be structural -- quotes, braces, brackets, fences, commas, whitespace. One word character after the member and it declines, because DONE_MAYBE is a different word and guessing there would be a rescue. Never applied to free-text arguments: a file's content may legitimately end in a brace. 20 tests, including that a repaired DONE still faces every other finish gate.",
+   "risk": "A status the harness has not thought of that happens to begin with a member would be silently narrowed. Bounded by requiring the remainder to carry no meaning at all.",
+   "dependencies": "F-92, F-109"
+  },
+  {
+   "id": "F-118",
+   "priority": "P0",
+   "component": "localprog/orient.py opening_candidates",
+   "status": "FIXED",
+   "evidence": "Measured offline over the frozen fifty-case corpus, no engine invoked. Whole-repository ranking (before): recall@1 18/50, recall@5 32/50. Three of five slots reserved for files the objective itself names: 23/50 and 41/50. All five reserved: 23/50 and 43/50. Five cases gain rank 1 and NONE lose it under any scheme. The shipped implementation reproduces the predicted 23/50 and 41/50 exactly.",
+   "impact": "The correction for F-115. It moves the NOT_RETRIEVED floor, which is the largest loss bucket in all seven engines.",
+   "cause": "Stated in F-115.",
+   "fix": "orient.named_paths() -- a path-shaped token that RESOLVES to a real file, existence being the whole test, since constraining on a guess would hide the answer for good -- and NAMED_PATH_SLOTS=3 reserved in the shortlist, filled from the wide ranking after. Three and not five deliberately: two more cases is not worth giving up the only route to the answer when the named file is a red herring. When the objective names nothing that exists the ranking is byte-identical to before, which is the property that protects every mission that does not name a file. 12 tests.",
+   "risk": "This is a RETRIEVAL measurement, not an accuracy measurement. Conversion once the symbol is reached is 88-100%, so the direction is expected, but the size in accuracy terms is unmeasured and stays unmeasured until a discriminating GPU run.",
+   "dependencies": "F-115, F-110, F-85"
+  },
+  {
+   "id": "F-119",
+   "priority": "P1",
+   "component": "localprog/loop.py _reasoning_of",
+   "status": "REPRODUCED",
+   "evidence": "qwen3.5:2b: 91 ERROR_NO_TOOL_CALL turns in cohort 3. 82 of them emitted EMPTY content, and 80 of those 82 carry a recorded reasoning channel (median 392 characters, max 41 223). Only 2 hit the output budget, so this is not truncation. The model thought and then closed the turn without answering. Whether the call it had already settled on was sitting in that channel CANNOT BE ANSWERED from the sealed record, because the record held a character count and nothing else.",
+   "impact": "A whole cohort's worth of the cheapest engine's dead turns is undiagnosable, and the same instrument gap would hide it again next time.",
+   "cause": "F-100 sealed the answer channel and left the reasoning channel counted but unquoted.",
+   "fix": "reasoning_head (400 chars) and reasoning_tail (1200) sealed, with reasoning_elided stating what was dropped. The tail is the larger of the two because a model that settled on a call settled at the end. Bounded because one turn reached 41 223 characters and a cohort's evidence must not become mostly deliberation. 5 tests. This makes the question ASKABLE next cohort; it does not answer it.",
+   "risk": "Deliberately does NOT act on the reasoning channel. Reasoning is deliberation, and executing a call the model mentioned while thinking would run something it may have decided against. Measure first.",
+   "dependencies": "F-95, F-100, F-101"
   }
  ],
  "safety_record": {

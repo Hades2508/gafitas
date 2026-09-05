@@ -94,6 +94,36 @@ SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modu
 FINISH_STATUSES = ("DONE", "NO_CHANGE", "BLOCKED")
 MAX_DIR_ENTRIES = 200
 
+#: F-117. The closers of a syntax an argument was written inside: a quote, a
+#: brace, a bracket, a fence, a comma, whitespace. Nothing that carries meaning.
+_STRUCTURAL = re.compile(r"""^[\s"'`}\]),;:]*$""")
+
+
+def _enum_member(value: str, members: tuple[str, ...]) -> str | None:
+    """The enum member *value* was trying to be, or None.
+
+    ministral-3:3b wrote a correct ``finish`` inside a fenced JSON block 38
+    times in one cohort and had every one refused, because the argument value
+    carried its wrapper out with it:
+
+        status='DONE"}\\n```'
+
+    The value is the member plus the punctuation that closed the block it was
+    written in. Taking the member back is a repair. Guessing past a word
+    character would be a rescue, so anything alphanumeric after the member
+    means this declines and the call is refused as before.
+
+    Only for CLOSED enums. A file's content may legitimately end in a brace,
+    and applying this there would corrupt it.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    for member in members:
+        if text.upper().startswith(member) and _STRUCTURAL.match(text[len(member):]):
+            return member
+    return None
+
 #: How many ranked candidates search_code returns by default (F-59). Fifteen
 #: is about 3k characters of path + declaration + preview: small enough to
 #: read in one turn, wide enough that offline the needle is inside it for
@@ -2178,6 +2208,8 @@ def finish(ctx: ToolContext, summary: Any = None, status: Any = "DONE") -> str:
         raise InvalidCall(ERROR_BAD_ARGUMENTS, "status debe ser una cadena")
     normalised = status.strip().upper() or "DONE"
     if normalised not in FINISH_STATUSES:
+        normalised = _enum_member(normalised, FINISH_STATUSES) or normalised
+    if normalised not in FINISH_STATUSES:
         raise InvalidCall(
             ERROR_BAD_ARGUMENTS,
             f"status debe ser uno de {', '.join(FINISH_STATUSES)}; recibido {status!r}",
@@ -2389,6 +2421,56 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "finish": ((), ("summary", "status")),
 }
 
+#: F-116. Names the harness is inconsistent about, charged to the harness.
+#:
+#: Six of the seven file tools call the file ``path``. ``copy_code`` alone calls
+#: it ``src``. In cohort 3 phi4-mini called ``copy_code(path=..., name=...,
+#: start=..., end=...)`` -- the right tool, the right file, the right symbol,
+#: the right lines -- and was refused for the one key the harness spells
+#: differently there than everywhere else. It then repeated the identical call
+#: on turns 4, 8 and 9 of the same run.
+#:
+#: A synonym is taken ONLY when the real name is absent and the synonym is
+#: present, so a call that spells everything correctly is never touched, and a
+#: call that supplies both is left alone rather than silently merged.
+SYNONYMS: dict[str, dict[str, tuple[str, ...]]] = {
+    "copy_code": {
+        "src": ("path", "file", "source", "from"),
+        "into": ("dest", "destination", "to", "target", "out"),
+    },
+    "replace_lines": {"content": ("new", "new_content", "text")},
+    "edit": {"new": ("new_content", "replacement"),
+             "old": ("old_content", "original")},
+    "write_file": {"content": ("text", "body", "new_content")},
+    "grep": {"pattern": ("query", "regex")},
+    "search_code": {"query": ("pattern", "q")},
+    "run": {"argv": ("command", "cmd", "args")},
+}
+
+
+def apply_synonyms(name: str, args: dict) -> tuple[dict, list[str]]:
+    """*args* with known misspellings of parameter names corrected.
+
+    Returns the arguments and the list of ``wrong -> right`` renames applied,
+    so the repair is recorded rather than hidden. A repair nobody can see in
+    the evidence is indistinguishable from the model having got it right.
+    """
+    table = SYNONYMS.get(name)
+    if not table:
+        return args, []
+    fixed = dict(args)
+    applied = []
+    for real, aliases in table.items():
+        if real in fixed:
+            continue
+        for alias in aliases:
+            if alias in fixed:
+                fixed[real] = fixed.pop(alias)
+                applied.append(f"{alias} -> {real}")
+                break
+    return fixed, applied
+
+
 _IMPL = {
     "read_file": read_file,
     "list_dir": list_dir,
@@ -2406,6 +2488,20 @@ _IMPL = {
 }
 
 assert set(SPECS) == set(_IMPL), "SPECS and _IMPL must describe the same tools"
+
+# A synonym table that has drifted from SPECS is worse than none: it would
+# rename a good argument onto a parameter that no longer exists, and the call
+# would fail for a reason nobody could find. Checked at import, once.
+for _tool, _table in SYNONYMS.items():
+    assert _tool in SPECS, f"SYNONYMS names {_tool!r}, which is not a tool"
+    _params = set(SPECS[_tool][0]) | set(SPECS[_tool][1])
+    for _real, _aliases in _table.items():
+        assert _real in _params, f"{_tool}.{_real} is not a parameter of {_tool}"
+        for _alias in _aliases:
+            assert _alias not in _params, (
+                f"{_tool}: {_alias!r} is a real parameter and cannot also be an "
+                f"alias for {_real!r}")
+del _tool, _table, _params, _real, _aliases, _alias
 
 
 @dataclass(frozen=True)
@@ -2471,6 +2567,7 @@ def dispatch(ctx: ToolContext, name: Any, raw_args: Any) -> ToolOutcome:
             known = ", ".join(sorted(SPECS))
             raise InvalidCall(ERROR_UNKNOWN_TOOL, f"{name!r} no existe. Herramientas: {known}")
         args = normalise_arguments(raw_args)
+        args, renamed = apply_synonyms(name, args)
         required, optional = SPECS[name]
         missing = [k for k in required if k not in args]
         if missing:
@@ -2485,11 +2582,20 @@ def dispatch(ctx: ToolContext, name: Any, raw_args: Any) -> ToolOutcome:
             # Something came back that the agent did not already have, so the
             # next write is acting on it rather than re-guessing.
             ctx.learned_since_write = True
+        notes = []
+        if renamed:
+            # Said out loud on purpose. The call worked, and the agent still
+            # needs to learn the name, or it will spend the next turn spelling
+            # it the same way again.
+            notes.append(f"[aviso: {name} llama a ese argumento "
+                         f"{', '.join(renamed)}; se ha aceptado igualmente]")
         if unknown:
             # Extra keys are tolerated but reported; refusing here would fail
             # a call that is otherwise perfectly good.
+            notes.append(f"[aviso: argumentos ignorados: {', '.join(sorted(unknown))}]")
+        if notes:
             return ToolOutcome(name=name, ok=True, value=value,
-                               feedback=f"[aviso: argumentos ignorados: {', '.join(sorted(unknown))}]")
+                               feedback="\n".join(notes))
         return ToolOutcome(name=name, ok=True, value=value)
     except ToolError as exc:
         return ToolOutcome(name=str(name), ok=False, feedback=exc.feedback(), code=exc.code, tool_error=True)

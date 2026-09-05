@@ -122,6 +122,50 @@ def test_reasoning_is_measured_in_characters_and_says_so():
     assert not any(k.endswith("_tokens") for k in got)
 
 
+# ---------------------------------------------- F-119: the channel's own text
+
+def test_the_reasoning_text_is_sealed_not_just_counted():
+    """Eighty-two of qwen3.5:2b's ninety-one dead turns in cohort 3 emitted
+    EMPTY content, and eighty of those carried a reasoning channel: it thought
+    and then closed the turn without answering. Whether the call it had already
+    settled on was sitting in that channel is the question, and a character
+    count cannot be asked it."""
+    got = loop._reasoning_of({"thinking": "voy a leer el fichero"})
+    assert got["reasoning_head"] == "voy a leer el fichero"
+
+
+def test_a_long_channel_is_sealed_at_both_ends():
+    """The tail matters more than the head: a model that settled on a call
+    settled at the end. One turn of qwen3.5:2b reached 41 223 characters, so
+    this cannot be unbounded either."""
+    body = "A" * 5000 + "finish(status='DONE')"
+    got = loop._reasoning_of({"thinking": body})
+    assert len(got["reasoning_head"]) == loop.REASONING_HEAD
+    assert got["reasoning_tail"].endswith("finish(status='DONE')")
+    assert len(got["reasoning_tail"]) == loop.REASONING_TAIL
+
+
+def test_what_was_dropped_is_counted():
+    """A bounded record that does not say how much it dropped invites the next
+    reader to treat it as complete."""
+    got = loop._reasoning_of({"thinking": "B" * 5000})
+    kept = len(got["reasoning_head"]) + len(got.get("reasoning_tail", ""))
+    assert got["reasoning_elided"] == 5000 - kept
+
+
+def test_a_short_channel_is_not_duplicated_into_head_and_tail():
+    got = loop._reasoning_of({"thinking": "corto"})
+    assert "reasoning_tail" not in got
+    assert got["reasoning_elided"] == 0
+
+
+def test_the_seal_is_bounded_whatever_arrives():
+    got = loop._reasoning_of({"thinking": "C" * 200_000})
+    total = len(got["reasoning_head"]) + len(got.get("reasoning_tail", ""))
+    assert total <= loop.REASONING_HEAD + loop.REASONING_TAIL
+    assert got["reasoning_chars"] == 200_000, "the true size is still recorded"
+
+
 # ------------------------------- F-101: cut off is not the same as wrong
 
 def test_a_generation_that_reached_its_budget_is_marked():

@@ -193,6 +193,13 @@ _USAGE_KEYS = (
 #: than silent.
 NO_CALL_TEXT_LIMIT = 4000
 
+#: How much of a reasoning channel is sealed. One turn of qwen3.5:2b reached
+#: 41 223 characters, so this cannot be unbounded -- a cohort's evidence would
+#: be mostly deliberation. Head and tail both, and the tail is the larger of
+#: the two: a model that decided on a call decided at the end.
+REASONING_HEAD = 400
+REASONING_TAIL = 1200
+
 
 def _seal_text(text: Any, limit: int = NO_CALL_TEXT_LIMIT) -> dict:
     """The model's own output, bounded, with the bound stated."""
@@ -217,7 +224,22 @@ def _reasoning_of(message: Any) -> dict:
     for key in ("thinking", "reasoning", "reasoning_content"):
         value = message.get(key)
         if isinstance(value, str) and value.strip():
-            return {"reasoning_key": key, "reasoning_chars": len(value)}
+            sealed = {"reasoning_key": key, "reasoning_chars": len(value)}
+            # F-119. Eighty-two of qwen3.5:2b's ninety-one dead turns emitted
+            # EMPTY content, and eighty of those carried a reasoning channel:
+            # the model thought and then closed the turn without answering.
+            # Whether the call it had already decided on was sitting in that
+            # channel is the question, and the previous record -- a character
+            # count and nothing else -- could not be asked it. The TAIL is
+            # sealed as well as the head because a decision comes last.
+            head = value[:REASONING_HEAD]
+            tail = value[-REASONING_TAIL:] if len(value) > REASONING_HEAD else ""
+            sealed["reasoning_head"] = head
+            if tail and tail != head:
+                sealed["reasoning_tail"] = tail
+            sealed["reasoning_elided"] = max(
+                len(value) - len(head) - len(tail), 0)
+            return sealed
     return {}
 
 

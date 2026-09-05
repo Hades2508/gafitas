@@ -37,6 +37,7 @@ one is a second copy of the repo.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -104,6 +105,61 @@ def repo_map(root: Path, *, max_chars: int = MAX_CHARS,
 #: cost in a prompt that is sent on every turn.
 OPENING_CANDIDATES = 5
 
+#: How many of those five are reserved for files the objective itself named.
+#: Measured over the fifty-case corpus: three reserved slots take recall@5 from
+#: 32/50 to 41/50 and recall@1 from 18/50 to 23/50, with nothing lost at either
+#: rank. Reserving all five reaches 43/50 -- two more -- and gives up the two
+#: slots that are the only way to find the answer when the named file turns out
+#: to be a red herring, which is a trade this does not take.
+NAMED_PATH_SLOTS = 3
+
+#: A path-shaped token: at least one separator or dot, and an extension.
+_PATHISH = re.compile(r"[\w][\w./\\-]*\.[A-Za-z0-9_]{1,8}")
+
+
+def named_paths(objective: str, root: Path, *, limit: int = 4) -> list[str]:
+    """Paths the objective names that actually exist in *root*.
+
+    Existence is the whole test. A string that merely looks like a path is a
+    guess; one that resolves is a constraint the objective already stated, and
+    the ranking had been ignoring it -- eighteen of fifty runs opened on a
+    shortlist that held nothing from the file the objective pointed at, or held
+    it only under a different symbol.
+    """
+    out: list[str] = []
+    for token in _PATHISH.findall(objective or ""):
+        rel = token.replace("\\", "/").strip("./")
+        if rel in out:
+            continue
+        try:
+            if (root / rel).is_file():
+                out.append(rel)
+        except OSError:
+            continue
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _reserve(inside: list, wide: list, slots: int, limit: int) -> list:
+    """*slots* of the shortlist for *inside*, the rest filled from *wide*.
+
+    Order within each group is left exactly as the index ranked it. This
+    reorders which regions are shown; it does not rescore any of them, so the
+    list an agent reads is still the index's own opinion.
+    """
+    chosen: list = []
+    seen: set = set()
+    for row in list(inside)[:slots] + list(wide):
+        if len(chosen) >= limit:
+            break
+        key = (row[0].path, row[0].start, row[0].end)
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen.append(row)
+    return chosen
+
 
 def opening_candidates(root: Path, objective: str, *,
                        limit: int = OPENING_CANDIDATES,
@@ -132,6 +188,17 @@ def opening_candidates(root: Path, objective: str, *,
     try:
         index = retrieval.Index(root)
         rows = index.search(text, limit=limit)
+        # F-118. The objective may already have named the file. When it has,
+        # reserve part of the shortlist for regions inside it, because the
+        # similarity ranking alone will happily fill all five slots from
+        # elsewhere in the repository -- it did so in eighteen of fifty runs on
+        # a corpus where the objective named the file every single time.
+        wanted = named_paths(text, root)
+        if wanted:
+            deep = index.search(text, limit=200)
+            inside = [(r, s) for r, s in deep if r.path in wanted]
+            if inside:
+                rows = _reserve(inside, rows, NAMED_PATH_SLOTS, limit)
     except (OSError, ValueError, RecursionError):
         # A shortlist is a convenience and a run must never fail because
         # building one did -- but the catch is narrow on purpose. The first
