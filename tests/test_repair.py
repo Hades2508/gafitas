@@ -247,3 +247,62 @@ def test_python_literal_tier_cannot_execute_anything():
                     '{"tool": open("/etc/passwd").read()}',
                     '{"tool": 1+1}'):
         assert repair._python_literal(hostile) is None
+
+
+# ---------------------- F-109: a call written as a call, in plain text
+
+def test_a_python_style_call_is_recovered():
+    """qwen3:4b produced 291 dead turns in one cohort and every one was this.
+
+    Not empty, not truncated, not reasoning: a complete call with the right name
+    and the right arguments, written as a function call instead of a JSON
+    object, and discarded 291 times. The engine scored 80% while closing the
+    loop 8% of the time.
+    """
+    content = ('finish(status="DONE", summary="Copied the get_poller function '
+               'from locust/input_events.py to REPOQA_ANSWER.txt as requested.")')
+    name, args, tier = repair.recover(content, known_tools=KNOWN)
+    assert (name, tier) == ("finish", repair.TIER_TEXT_CALL)
+    assert args["status"] == "DONE"
+    assert "get_poller" in args["summary"]
+
+
+def test_the_last_written_call_wins():
+    """Models reason and then act, so the final call is the decision."""
+    content = ('Primero pense en read_file(path="a.py") pero mejor '
+               'finish(status="BLOCKED", summary="no encuentro el simbolo")')
+    name, args, _ = repair.recover(content, known_tools=KNOWN)
+    assert name == "finish" and args["status"] == "BLOCKED"
+
+
+def test_prose_with_parentheses_is_not_a_call():
+    """The known-tools gate is what stops ordinary text becoming an action."""
+    assert repair.recover("La funcion (que ya lei) parece correcta.",
+                          known_tools=KNOWN) is None
+    assert repair.recover("no_such_tool(path='a.py')", known_tools=KNOWN) is None
+
+
+def test_a_tool_name_inside_a_longer_word_is_not_a_call():
+    assert repair.recover('unfinish(status="DONE")', known_tools=KNOWN) is None
+    assert repair.recover('my.finish(status="DONE")', known_tools=KNOWN) is None
+
+
+def test_without_the_known_tools_gate_nothing_is_recovered():
+    """The gate is not an optimisation. Without it this tier is disabled."""
+    assert repair._text_call('finish(status="DONE")', None) is None
+    assert repair._text_call('finish(status="DONE")', frozenset()) is None
+
+
+def test_an_unparseable_argument_declines_instead_of_raising():
+    """_value raises on a value it cannot read. A repair tier recovers or
+    declines; it never raises, because the caller's ordinary error is what the
+    model needs to see."""
+    content = 'write_file(path="OUT.txt", content="def f():\n  """doc""" \n  return 1")'
+    assert repair.recover(content, known_tools=KNOWN) is None
+
+
+def test_a_wellformed_json_call_never_reaches_the_text_tier():
+    """This tier runs only after every object-shaped reading has failed."""
+    content = '{"tool": "finish", "arguments": {"status": "DONE", "summary": "ok"}}'
+    _name, _args, tier = repair.recover(content, known_tools=KNOWN)
+    assert tier != repair.TIER_TEXT_CALL

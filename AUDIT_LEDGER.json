@@ -1174,6 +1174,42 @@
    "fix": "gpu_guard now samples the machine on the same timer it samples the card: mean and peak CPU percentage and the peak worker-process count, recorded in every thermal log beside the watts. A cohort measured beside a disk sweep is not wrong, it is a cohort with a covariate -- and the covariate now sits in the record where a reader can see it next to the seconds.",
    "risk": "HARNESS_LIMIT, stated rather than solved: this machine cannot currently produce a quiet timing measurement. Recording the contention makes cohorts comparable to each other only when their recorded load is comparable. A genuinely clean economy figure needs the other systems paused, which is the operator's decision and not this campaign's to take.",
    "dependencies": "F-107"
+  },
+  {
+   "id": "F-109",
+   "priority": "P0",
+   "component": "localprog/repair.py",
+   "status": "FIXED",
+   "evidence": "qwen3:4b produced 291 dead turns in cohort 3, scored 80% and closed the loop 8% of the time. The sealed emission text (F-99) shows every one was a complete call written as a Python-style function call. Replayed through the new tier, 289 of 291 recover: 280 as finish, 9 as write_file. The two that do not carry unescaped quotes inside a payload.",
+   "impact": "An engine calling tools correctly in an unambiguous syntax had 291 calls discarded. Its 8% finish rate was the harness refusing to read what it said. Protocol B has parsed this shape since it existed, gated behind a LLAMADA: marker the model never writes.",
+   "cause": "Every repair tier assumed the call was an OBJECT. A function-call syntax produces no brace-scanner candidate, so no tier ever saw it.",
+   "fix": "A text_call tier, last of five, on the whole content. Gated on known_tools and disabled without it. The name must stand alone. The last occurrence wins. Arguments parse with protocol B's own scanner, imported not duplicated. An unreadable value makes it DECLINE, never raise.",
+   "risk": "A model quoting a call descriptively could have it executed. Against that: the tier runs only after every object-shaped reading failed, the alternative is a dead turn producing nothing, and a wrong recovery yields a tool error the model can see. Discarding a real call is the worse failure and it was the one happening.",
+   "dependencies": "F-99"
+  },
+  {
+   "id": "F-110",
+   "priority": "P0",
+   "component": "localprog/orient.py opening_candidates",
+   "status": "REPRODUCED",
+   "evidence": "The shortlist disclaims its ranking and then writes TWO ready-to-paste calls, both using candidate #1. Of copies that took the WRONG symbol, the share that took exactly that candidate: ministral 6/8, granite4.2 6/9, granite4.1 9/20, phi4-mini 7/17. In 7 of 10 traced phi4-mini losses the wrong symbol was in the shortlist and in 4 of those the right one was not. The same cases fail the same way in different engines.",
+   "impact": "Half of phi4-mini's 28 losses and 7 of ministral's 14 are wrong-symbol copies, most at turn 1 or 2. F-85 in a second place: a disclaimer followed by a worked example that turns a ranked hint into an instruction.",
+   "cause": "The shortlist pre-fills a concrete call with rows[0]. Choosing is free for candidate #1 and costs a decision for every other.",
+   "fix": "NOT YET. The shortlist cannot be removed (ablation 60% vs 20%) and F-82 measured that a CONCRETE call beats a kind of call, 95% vs 7%. Candidate design keeps both: render every listed candidate as a ready call, so a concrete call is still offered and choosing stays the model's act. Hypothesis; needs a discriminating run.",
+   "risk": "Untested. The top candidate is right 59-75% of the time, so making engines ignore the ranking could cost more than the anchoring does.",
+   "dependencies": "F-82, F-85, F-89"
+  },
+  {
+   "id": "F-111",
+   "priority": "P1",
+   "component": "localprog/engine.py working_output",
+   "status": "PARTIALLY_RESOLVED",
+   "evidence": "Cohort 3 bare-arm cap-hits: 0/50 for ministral, granite4.1 and qwen3:4b; 1/50 phi4-mini; 3/50 granite4.2; 4/50 gemma3; and 24/50 for qwen3.5:2b.",
+   "impact": "Six engines are no longer truncated. The seventh still is in half its cases, so its +14 is NOT an established amplification.",
+   "cause": "working_output is a quarter of the served context, 8192 at 32768. A reasoning engine spends one budget on thinking and answering, and this one needs more than 8192 for both.",
+   "fix": "NOT YET, and deliberately not by raising the ratio: the quarter exists so nothing is asked to produce more than it can hold beside its prompt. The lever is the served context itself, and it costs VRAM that has not been measured. Recorded rather than guessed at, which is the difference between this and the 1024 it replaced.",
+   "risk": "Any comparison involving that engine's bare arm is an upper bound on its ability, in the direction that flatters GAFITAS.",
+   "dependencies": "F-95, F-101"
   }
  ],
  "safety_record": {
@@ -1190,7 +1226,6 @@
   "Explorer never demonstrated as needed, so never integrated",
   "F-96 invalidates the five-engine expansion cohort's deltas; the cohort is preserved and excluded from conclusions",
   "latency cost of the F-95 reasoning budget is measured but not yet optimised",
-  "qwen3:4b's 316 dead turns remain unexplained; the tool role is NOT the cause (7 of 8 engines read it correctly) and the sealed emission text now exists to diagnose them",
   "every pre-F-101 amplification figure is an upper bound; the bias is measured at roughly 40% of net advantage on one 20-case sample",
   "run-to-run variance on the paired net is about +-2 at n=50 (granite4.2, two cohorts, unchanged conditions); no single-cohort delta smaller than that supports a claim",
   "throughput (tokens per provider-second) is the contention detector: it does not depend on case difficulty and should be checked on every cohort",
@@ -1200,7 +1235,9 @@
   "QWEN3_4B_NO_CLEAN_FINISH: scores 80% while closing the loop 8% of the time, 61% real-call rate. The sealed no-call text now exists and has not been read.",
   "Phase 5 real-task runner and Phase 3 multi-language sweep are built and verified and have NOT been run.",
   "GDDR6X memory temperature is not observable on this card, so the component most at risk from sustained load is unmeasured.",
-  "the cumulative SW-thermal-slowdown counter is not recorded per cohort, so it is unknown whether any measurement ran on a thermally limited card."
+  "the cumulative SW-thermal-slowdown counter is not recorded per cohort, so it is unknown whether any measurement ran on a thermally limited card.",
+  "qwen3.5:2b's bare arm is still truncated in 24/50 cases at an 8192 budget; its +14 is not an established amplification",
+  "F-110 anchoring fix is designed and untested: render every shortlist candidate as a ready call, not only the first"
  ],
  "objective": "Remove the paid tier from the normal programming path. Luna and Claude become construction, teaching and audit tools; they are not runtime dependencies for the supported task classes.",
  "final_measurement": {

@@ -35,7 +35,7 @@ THE RULES THIS FOLLOWS
 3. **Announce.** A recovered call carries ``repaired`` and the tier that fired.
    The loop counts them and evidence seals them, because a run that only worked
    because of repairs is a different fact from a run that did not need any.
-4. **Bounded.** Four tiers, each a fixed deterministic transformation. No
+4. **Bounded.** Five tiers, each a fixed deterministic transformation. No
    model, no heuristic search, no retry.
 
 WHY NOT JUST ASK THE MODEL AGAIN
@@ -59,6 +59,7 @@ TIER_RAW_CONTROLS = "raw_control_chars"
 TIER_TERMINAL_STRING = "terminal_string"
 TIER_NATIVE_IN_CONTENT = "native_call_in_content"
 TIER_PYTHON_LITERAL = "python_literal"
+TIER_TEXT_CALL = "text_call"
 TIERS = (TIER_NATIVE_IN_CONTENT, TIER_RAW_CONTROLS, TIER_TERMINAL_STRING)
 
 #: A tool call, whatever the provider called the fields. Both spellings are in
@@ -166,6 +167,67 @@ def _closes_its_object(blob: str) -> bool:
             if depth == 0:
                 return True
     return False
+
+
+def _text_call(blob: str, known_tools: frozenset[str] | None) -> tuple[str, dict] | None:
+    """A call written as ``name(key=value, ...)`` in plain text.
+
+    Gated on ``known_tools`` and unusable without it: the gate is what stops
+    ordinary prose containing parentheses from becoming a call. The LAST
+    occurrence wins, because a model reasons and then acts.
+
+    Argument parsing is protocol B's, imported here rather than duplicated, so
+    the two forms of the same syntax cannot drift apart. The import is local
+    because protocol imports this module.
+    """
+    if not known_tools:
+        return None
+    from .protocol import _scan_balanced, _split_top_level, _value
+
+    best = None
+    for name in known_tools:
+        start = 0
+        while True:
+            at = blob.find(name + "(", start)
+            if at == -1:
+                at = blob.find(name + " (", start)
+                if at == -1:
+                    break
+            # The name must stand on its own: `finish(` is a call and
+            # `unfinish(` is not.
+            if at > 0 and (blob[at - 1].isalnum() or blob[at - 1] in "_."):
+                start = at + 1
+                continue
+            if best is None or at > best[0]:
+                best = (at, name)
+            start = at + 1
+    if best is None:
+        return None
+    at, name = best
+
+    open_at = blob.index("(", at)
+    end = _scan_balanced(blob, open_at)
+    if end == -1:
+        return None
+    body = blob[open_at + 1:end - 1].strip()
+
+    arguments: dict = {}
+    if body:
+        for part in _split_top_level(body, ","):
+            pieces = _split_top_level(part, "=")
+            if len(pieces) < 2:
+                return None                 # not keyword form; refuse, do not guess
+            key = pieces[0].strip().strip("\"'")
+            if not key.isidentifier():
+                return None
+            try:
+                arguments[key] = _value(part[len(pieces[0]) + 1:].strip())
+            except Exception:               # noqa: BLE001
+                # _value raises InvalidCall on a value it cannot read. A repair
+                # tier must never raise: it recovers or it declines, and the
+                # caller's ordinary error is what the model should see.
+                return None
+    return name, arguments
 
 
 def _terminal_string(blob: str) -> Any:
@@ -377,6 +439,13 @@ def recover(content: str, *, known_tools: frozenset[str] | None = None
             if known_tools is not None and name not in known_tools:
                 continue
             return name, args, tier
+
+    # Last: a call that is not an object at all. The brace scanner produces no
+    # candidate for `finish(status="DONE")`, so this runs on the whole text and
+    # only once every object-shaped reading has failed.
+    written = _text_call(content, known_tools)
+    if written is not None:
+        return written[0], written[1], TIER_TEXT_CALL
     return None
 
 
