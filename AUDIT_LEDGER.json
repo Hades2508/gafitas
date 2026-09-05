@@ -1042,6 +1042,78 @@
    "fix": "Recorded, not patched. The hypothesis that the symbol index could not see nested definitions is FALSIFIED and kept as falsified rather than reinterpreted.",
    "risk": "none",
    "dependencies": "none"
+  },
+  {
+   "id": "F-98",
+   "priority": "P1",
+   "component": "localprog/provider.py",
+   "status": "FIXED",
+   "evidence": "13 of 50 runs of one engine ended TIMEOUT at 300s and every one scored zero. The budget it was generating against was 8192 tokens.",
+   "impact": "A quarter of that engine's cohort never happened, and its accuracy and its seconds-per-success were both computed over a denominator that included them. Its clean-cohort classification is INCONCLUSIVE as a result.",
+   "cause": "The output budget and the patience were set in different places by different reasoning. Nothing connected 'we granted 8192 tokens' to 'we will wait 300 seconds'.",
+   "fix": "timeout_for(num_predict, requested) returns a FLOOR derived from the budget at a conservative 12 tok/s -- well under the 121-126 tok/s measured on this machine -- bounded above at 1800s so a hung server is still a bounded failure. A caller asking to wait longer still wins, because that is a policy and this is a floor.",
+   "risk": "A genuinely hung generation now takes longer to declare dead. Bounded by the ceiling, and preferable to scoring an engine zero for work it was still doing.",
+   "dependencies": "F-95, F-96"
+  },
+  {
+   "id": "F-99",
+   "priority": "P0",
+   "component": "localprog/loop.py",
+   "status": "FIXED",
+   "evidence": "316 turns on one engine and 196 on another produced no tool call. The harness recorded that fact, the error code and its own feedback -- and never what the model actually said.",
+   "impact": "The single most expensive instrumentation gap in the campaign. Two engines' dominant failure mode was undiagnosable for an entire cohort, and one of them turned out to have a cause that took four lines to reproduce once the text existed.",
+   "cause": "The event carried the harness's side of the exchange and not the engine's.",
+   "fix": "The emission is sealed, bounded at 4000 characters, with the truncation announced rather than silent. An empty emission is distinguishable from a missing one, because 'it said nothing' and 'it said something unparseable' are different failures that used to look identical.",
+   "risk": "Evidence files grow. Bounded, and the bound is stated in the record.",
+   "dependencies": "none"
+  },
+  {
+   "id": "F-100",
+   "priority": "P1",
+   "component": "localprog/loop.py",
+   "status": "FIXED",
+   "evidence": "Usage was aggregated per ticket, so 'how many generations hit the cap' could only be answered for single-call runs. The reasoning channel was counted inside eval_count, so the cost of thinking could not be separated from the cost of answering. seen_at was null in 234 of 252 events.",
+   "impact": "Three questions the clean cohort could not be asked, one of which (cap-hits) turned out to decide an engine's whole result.",
+   "cause": "Instrumentation written for totals, then used for distributions.",
+   "fix": "Per-call usage, per-event elapsed seconds, and the reasoning channel recorded separately -- in CHARACTERS, because the server reports no token split and deriving one from a ratio would be a guess wearing a number. The bare arm records equivalent usage too, so a tokens-per-success comparison between the arms exists for the first time.",
+   "risk": "none measured",
+   "dependencies": "none"
+  },
+  {
+   "id": "F-101",
+   "priority": "P1",
+   "component": "localprog/loop.py, run_matched.py",
+   "status": "DETECTED_NOT_ACTED_ON",
+   "evidence": "The moment per-call usage landed: gemma3:4b's bare arm produced exactly 1024 of 1024 tokens on 6 of 6 smoke cases, and 9 of 10 on a second run. Its clean-cohort bare score of 7/50 is therefore not a measurement of what it knows.",
+   "impact": "F-95 raised the output budget only for engines with an observed reasoning channel. This engine has none and was being truncated anyway, so that rule was half the rule. Any comparison against a truncated bare arm flatters GAFITAS.",
+   "cause": "CONSERVATIVE_OUTPUT is 1024 and it is the harness's own guess for engines that declare no limit. It is too small for a task whose answer is a function reproduced verbatim.",
+   "fix": "NOT YET. Truncation is now recorded on both arms so it can be counted rather than inferred, and a ladder measures the smallest budget at which cap-hits reach zero. Picking a bigger number before measuring would be the same mistake in the other direction, which is exactly how F-95 ended up covering half the engines it needed to.",
+   "risk": "Until this is settled the next cohort cannot be called fair for any engine whose bare arm truncates.",
+   "dependencies": "F-95, F-100"
+  },
+  {
+   "id": "F-102",
+   "priority": "P0",
+   "component": "localprog/transcript.py",
+   "status": "FIXED",
+   "evidence": "Measured at the wire, three samples per arm, same conversation: gemma3:4b answers 0 of 3 with the result under role=tool (eval 1, 1, 1, content empty) and 3 of 3 with the identical result under role=user (eval 20, 20, 20). Seven other engines read the tool role correctly.",
+   "impact": "196 dead turns, a 33% real-call rate, 100% STALLED and a 0% finish rate across 50 runs. That engine was never able to see a single result the harness handed it.",
+   "cause": "The harness delivers every tool result as role=tool, and that message is the LAST one before the model speaks. Some chat templates do not implement the role in that position; the engine receives nothing.",
+   "fix": "tool_role_supported is measured and recorded, and when it is False the result arrives as a user message carrying the same bytes and the tool's name. UNKNOWN keeps the tool role: moving a channel on a guess is a defect already paid for once.",
+   "risk": "MEASURED AND MIXED. Ten cases, same needles: STALLED 10/10 became FINISHED 10/10, real-call rate 33% to 95%, one-token turns gone entirely -- and the SCORE went 3 to 2, with turns rising from 55 to 84. This is a ROBUSTNESS fix. Calling it a capability fix because the green metrics turned green is the error the last two corrections were about.",
+   "dependencies": "F-99, F-100"
+  },
+  {
+   "id": "F-103",
+   "priority": "P2",
+   "component": "measure_tool_role.py",
+   "status": "FALSIFIED_HYPOTHESIS_RECORDED",
+   "evidence": "The first version of the tool-role probe appended a user turn AFTER the tool result. All eight engines passed, including the one that fails 3 of 3 when the probe matches the harness's real shape.",
+   "impact": "The investigation into 512 dead turns would have closed with a clean bill of health. It also sampled once, which the payload ladder had already shown to be a coin flip.",
+   "cause": "The probe did not reproduce the shape the harness actually produces: a conversation ENDING on the tool result. The failure was masked by the one message the harness never sends.",
+   "fix": "The probe ends on the result, samples three times, and uses each engine's own output budget -- a fixed 512 had made both reasoning engines INCONCLUSIVE, which was F-95 reappearing inside the probe built to be free of it.",
+   "risk": "Recorded as a standing rule: a probe that does not reproduce the harness's own shape measures nothing.",
+   "dependencies": "F-90"
   }
  ],
  "safety_record": {
@@ -1057,7 +1129,9 @@
   "no commit/handoff step: the patch is produced, promotion stays a human decision",
   "Explorer never demonstrated as needed, so never integrated",
   "F-96 invalidates the five-engine expansion cohort's deltas; the cohort is preserved and excluded from conclusions",
-  "latency cost of the F-95 reasoning budget is measured but not yet optimised"
+  "latency cost of the F-95 reasoning budget is measured but not yet optimised",
+  "F-101 unresolved: the bare arm truncates at 1024 for at least one engine, so no cohort is fair for it until the budget is settled by measurement",
+  "qwen3:4b's 316 dead turns remain unexplained; the tool role is NOT the cause (7 of 8 engines read it correctly) and the sealed emission text now exists to diagnose them"
  ],
  "objective": "Remove the paid tier from the normal programming path. Luna and Claude become construction, teaching and audit tools; they are not runtime dependencies for the supported task classes.",
  "final_measurement": {

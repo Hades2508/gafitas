@@ -1,4 +1,16 @@
-"""F-95: an engine that thinks out loud must be able to afford the thought.
+"""F-95, and F-101 which superseded its rule.
+
+F-95 found that an engine thinking out loud paid for the thought out of the same
+budget as the call. That diagnosis holds. Its FIX -- raise the budget only where
+a reasoning channel is observed -- did not: measured on the real bare-arm prompt
+over eight cases, the engine that truncates worst has no reasoning channel at
+all, and the reference engine was being cut off in three cases of eight.
+
+The property is still measured and still recorded. It no longer decides the
+number on its own. What follows tests the rule as it now stands, and the first
+test exists to record the supersession rather than let it disappear.
+
+The original finding, kept because it is what led here:
 
 granite4.2:3b scored 28% through GAFITAS against 66% answering bare, and 170 of
 its 242 turns were ERROR_NO_TOOL_CALL. The measurement that explains it is the
@@ -30,20 +42,34 @@ def caps(**kw):
     return engine.EngineCapabilities(**base)
 
 
-def test_a_quiet_engine_keeps_the_conservative_budget():
-    assert caps(emits_reasoning_channel=False).working_output() == engine.CONSERVATIVE_OUTPUT
+def test_the_budget_no_longer_depends_on_the_reasoning_channel():
+    """F-101 SUPERSEDED F-95's rule, and this records the supersession.
 
+    F-95 raised the budget only where a reasoning channel was observed. The
+    ladder killed that condition -- cap-hits on the real prompt over eight bare
+    cases:
 
-def test_an_unmeasured_engine_keeps_the_conservative_budget():
-    """UNKNOWN is not a licence to spend. Only an observation changes this."""
-    assert caps().working_output() == engine.CONSERVATIVE_OUTPUT
+        budget          1024   2048   4096   8192
+        ministral-3:3b   0/8      -      -      -
+        granite4.1:3b    3/8    2/8    1/8    0/8     no reasoning channel
+        gemma3:4b        8/8    6/8    5/8    1/8     no reasoning channel
 
-
-def test_a_reasoning_engine_gets_room_for_the_reasoning_and_the_call():
+    The engine that truncates worst has no reasoning channel at all, and the
+    reference engine was being cut off in three cases of eight. The condition
+    was diagnosing how an engine SPENDS its budget when the question is whether
+    the budget covers the answer.
+    """
     quiet = caps(emits_reasoning_channel=False).working_output()
     loud = caps(emits_reasoning_channel=True).working_output()
-    assert loud > quiet
-    assert loud == 32768 // 4
+    unmeasured = caps().working_output()
+    assert quiet == loud == unmeasured == 32768 // 4
+
+
+def test_the_reasoning_channel_is_still_measured_and_recorded():
+    """It stopped deciding the budget. It did not stop being true, and it is
+    what explains WHY one engine spends 2175 tokens per call and another 46."""
+    assert caps(emits_reasoning_channel=True).emits_reasoning_channel is True
+    assert caps(emits_reasoning_channel=False).emits_reasoning_channel is False
 
 
 def test_a_declared_limit_still_wins_over_the_harness_guess():

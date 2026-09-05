@@ -59,6 +59,10 @@ REGISTRY = Path(__file__).resolve().parent.parent / "ENGINES.json"
 #: What the core falls back to when a context window could not be established.
 #: Conservative on purpose: too small wastes budget, too large loses the run.
 CONSERVATIVE_CONTEXT = 8192
+#: Kept for the probes, which deliberately ask small questions and should not
+#: pay for a large ceiling to do it. It is NO LONGER the working output budget:
+#: see working_output() and F-101 for why a fixed guess there was cutting real
+#: answers off, including the reference engine's.
 CONSERVATIVE_OUTPUT = 1024
 
 #: Keys under which a server returns an engine's reasoning separately from its
@@ -207,20 +211,29 @@ class EngineCapabilities:
         knob: it exists so an engine with a small window degrades instead of
         breaking.
 
-        An engine that returns its reasoning in a channel of its own pays for
-        that reasoning out of the same budget as the call, so the conservative
-        fallback stops being conservative and becomes a gag. granite4.2:3b spent
-        a median 974 of its 1024 tokens thinking and returned empty content in
-        170 of 242 turns. Where the engine DECLARES a limit that limit is still
-        obeyed -- this only replaces the harness's own guess (F-95).
+        Where the engine DECLARES a limit, that limit is obeyed. Where it does
+        not, the harness used to guess 1024, and that guess was cutting answers
+        off: an engine with a reasoning channel spent a median 974 of its 1024
+        tokens thinking and returned empty content in 170 of 242 turns (F-95),
+        and an engine with NO reasoning channel hit the same cap on 8 bare
+        cases out of 8 (F-101). One symptom, two mechanisms, one cause -- a
+        number too small for the answer being asked for.
         """
         ceiling = max(self.working_context() // 4, 256)
         if self.max_output_tokens:
             return min(self.max_output_tokens, ceiling)
-        floor = CONSERVATIVE_OUTPUT
-        if self.emits_reasoning_channel:
-            floor = ceiling
-        return min(floor, ceiling)
+        # F-101. There used to be a CONSERVATIVE_OUTPUT of 1024 here, raised to
+        # the ceiling only for engines with an observed reasoning channel. The
+        # ladder killed that rule: measured on the real prompt over eight cases,
+        # cap-hits by budget were 0/8 at 1024 for one engine, 3/8 at 1024 for
+        # the reference engine, and 8/8 for an engine with no reasoning channel
+        # at all. The condition was diagnosing how an engine SPENDS the budget
+        # when the question is whether the budget covers the answer.
+        #
+        # The ceiling is the principled bound and always was: a quarter of the
+        # served context, so nothing is asked to produce more than it can hold
+        # beside its own prompt. The guess underneath it goes.
+        return ceiling
 
     def to_dict(self) -> dict:
         out = asdict(self)
