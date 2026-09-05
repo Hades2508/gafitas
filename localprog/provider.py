@@ -51,6 +51,35 @@ WORK_NUM_PREDICT = 4096
 DEFAULT_NUM_PREDICT = 1024
 DEFAULT_TIMEOUT = 120.0
 
+#: The slowest generation rate a request is allowed to assume, in tokens per
+#: second. A timeout has to cover the budget it granted, and these two numbers
+#: were set in different places for different reasons: the clean cohort ran a
+#: 2B against an 8192-token budget behind a fixed 300 s ceiling, and 13 of its
+#: 50 runs died on TIMEOUT with nothing to show. Those runs are not evidence
+#: about the engine; they are evidence that we asked for more than we were
+#: willing to wait for.
+#:
+#: 12 tok/s is well under anything measured on this machine -- the cohort's
+#: engines ran at 121 to 126 tok/s -- so the floor only binds when something is
+#: genuinely pathological, and a caller's explicit timeout still wins when it is
+#: already generous enough.
+MIN_TOKENS_PER_SECOND = 12.0
+#: Prompt evaluation and transport, before a single token is generated.
+TIMEOUT_BASE_SECONDS = 30.0
+#: An upper bound, so a hung server is still a bounded failure.
+TIMEOUT_CEILING_SECONDS = 1800.0
+
+
+def timeout_for(num_predict: int, requested: float) -> float:
+    """A timeout that can actually accommodate the budget being granted.
+
+    Returns the LARGER of what the caller asked for and what the budget needs,
+    bounded above. Never smaller than the request: a caller that wants to wait
+    longer is expressing a policy, and this is a floor, not an override.
+    """
+    needed = TIMEOUT_BASE_SECONDS + max(0, num_predict) / MIN_TOKENS_PER_SECOND
+    return min(TIMEOUT_CEILING_SECONDS, max(float(requested or 0.0), needed))
+
 #: How long Ollama keeps the weights resident after a request. Ollama's own
 #: default is five minutes, which on a machine that is also somebody's desktop
 #: means a 9B model sits on 6.6 GB of VRAM and keeps the fans up long after the
@@ -88,7 +117,11 @@ class OllamaProvider:
         self.endpoint = endpoint
         self.num_ctx = num_ctx
         self.num_predict = num_predict
-        self.timeout = timeout
+        # The budget and the patience are now decided together (F-98). They used
+        # to be set in different places, and the gap between them scored 13 runs
+        # as zero for an engine that was simply still generating.
+        self.requested_timeout = timeout
+        self.timeout = timeout_for(num_predict, timeout)
         self.keep_alive = keep_alive
 
     def describe(self) -> dict:

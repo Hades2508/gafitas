@@ -186,6 +186,74 @@ _USAGE_KEYS = (
 )
 
 
+#: How much of a model's own words to seal when no tool call could be found.
+#: The whole point is to make those turns diagnosable, and 316 of them on one
+#: engine went unexplained for a whole cohort -- but an engine that loops can
+#: emit a great deal, so it is bounded and the truncation is announced rather
+#: than silent.
+NO_CALL_TEXT_LIMIT = 4000
+
+
+def _seal_text(text: Any, limit: int = NO_CALL_TEXT_LIMIT) -> dict:
+    """The model's own output, bounded, with the bound stated."""
+    if not isinstance(text, str):
+        return {"chars": 0, "text": "", "truncated": False,
+                "note": f"no era texto sino {type(text).__name__}"}
+    return {"chars": len(text),
+            "text": text[:limit],
+            "truncated": len(text) > limit}
+
+
+def _reasoning_of(message: Any) -> dict:
+    """The reasoning channel, separately from the answer, when there is one.
+
+    Recorded as its own field because ``eval_count`` counts the reasoning and
+    the answer together, so the cost of thinking could not be told apart from
+    the cost of answering. Characters, not tokens: the server reports no token
+    split, and inventing one from a ratio would be a guess wearing a number.
+    """
+    if not isinstance(message, dict):
+        return {}
+    for key in ("thinking", "reasoning", "reasoning_content"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return {"reasoning_key": key, "reasoning_chars": len(value)}
+    return {}
+
+
+def _call_usage(raw: Any, budget: int | None = None) -> dict:
+    """This ONE call's reported cost, not the running total.
+
+    The ticket total could not answer "how many generations hit the cap", which
+    is the difference between an engine that cannot answer and one that was cut
+    off mid-answer. Per call, it can -- and with ``budget`` it also says so
+    directly, because a generation that reached the budget it was given did not
+    finish, whatever it managed to say first (F-101).
+
+    Recorded, never acted on here. A budget raised on a hunch is how the
+    previous version of this rule ended up covering only half the engines it
+    needed to.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    source = raw.get("usage") if isinstance(raw.get("usage"), dict) else raw
+    out: dict[str, Any] = {}
+    for target, names in _USAGE_KEYS:
+        for name in names:
+            value = source.get(name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                out[target] = value
+                break
+    nanoseconds = raw.get("total_duration")
+    if isinstance(nanoseconds, (int, float)) and not isinstance(nanoseconds, bool):
+        out["provider_seconds"] = round(nanoseconds / 1e9, 3)
+    produced = out.get("output_tokens")
+    if isinstance(budget, int) and budget > 0 and isinstance(produced, int):
+        out["budget"] = budget
+        out["hit_budget"] = produced >= budget
+    return out
+
+
 def _accumulate_usage(usage: dict, raw: Any) -> None:
     """Fold one provider response's reported cost into the running total."""
     usage["calls"] += 1
@@ -521,7 +589,15 @@ def run_loop(
                 events.append({"turn": turn, "invalid_call": exc.code,
                                "feedback": feedback,
                                "consecutive_dead": consecutive_dead,
-                               "prompt_tokens": turn_input})
+                               "prompt_tokens": turn_input,
+                               # What the model ACTUALLY said. Without this a
+                               # dead turn is a fact with no cause attached, and
+                               # a whole cohort's worth of them stayed
+                               # undiagnosable.
+                               "emitted": _seal_text(message.get("content")),
+                               "call_usage": _call_usage(raw, getattr(provider, 'num_predict', None)),
+                               "at_seconds": round(time.perf_counter() - started, 3),
+                               **_reasoning_of(message)})
                 last_call_was_finish = False
                 if consecutive_dead >= STALL_THRESHOLD:
                     # Asking a 29th time is not persistence, it is spending the
@@ -572,7 +648,10 @@ def run_loop(
                                "seen_at": seen_at,
                                "result_chars": len(payload),
                                "repeat_count": repeat_count,
-                               "prompt_tokens": turn_input})
+                               "prompt_tokens": turn_input,
+                               "call_usage": _call_usage(raw, getattr(provider, 'num_predict', None)),
+                               "at_seconds": round(time.perf_counter() - started, 3),
+                               **_reasoning_of(message)})
                 if outcome.name == "finish":
                     result.outcome = FINISHED
                     break
@@ -627,7 +706,10 @@ def run_loop(
             events.append({"turn": turn, "tool": outcome.name, "ok": False,
                            "args": _event_args(call.arguments, payloads),
                            "code": outcome.code, "invalid_call": outcome.invalid_call,
-                           "prompt_tokens": turn_input})
+                           "prompt_tokens": turn_input,
+                           "call_usage": _call_usage(raw, getattr(provider, 'num_predict', None)),
+                           "at_seconds": round(time.perf_counter() - started, 3),
+                           **_reasoning_of(message)})
             last_call_was_finish = outcome.name == "finish"
             if error_repeat >= REPEAT_STALL_THRESHOLD:
                 # STALLED already means "asking again produces the same fact",
