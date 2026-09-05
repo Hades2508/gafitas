@@ -1318,6 +1318,54 @@
    "fix": "measured_reasoning_tokens (declared only from sealed telemetry, never from a family or a name), plus output_shortfall(), output_is_sufficient() and served_context_for(). The budget itself does NOT move: raising it on the strength of a measurement of the symptom would be tuning. What moves is visibility -- a deployment that cannot afford an engine's deliberation plus an answer now says so, and states the served context that would close it, instead of the run being recorded as the engine failing. output_is_sufficient() is three-valued: None means never measured, which is not the same as fine, and collapsing those two is how F-101 survived two cohorts. 15 tests, including that the verdict is identical for four engine names and that emits_reasoning_channel does not decide it.",
    "risk": "measured_reasoning_tokens could be declared from a guess. Its docstring and this record both state the only admissible source; nothing enforces it mechanically.",
    "dependencies": "F-95, F-101, F-111, F-119"
+  },
+  {
+   "id": "F-121",
+   "priority": "P0",
+   "component": "run_real_matched.py materialise / GATE_A_CORPUS ga05",
+   "status": "FIXED",
+   "evidence": "The Phase 5 leak audit, testing for THIS task's own reference text rather than for filenames, found `generalista/__pycache__/executor.cpython-313.pyc` inside ga05's materialised tree: the compiled POST-CHANGE version of `generalista/executor.py`, the exact file the task asks the agent to write. Eight of twelve distinctive reference lines are recoverable from it because string literals and docstrings survive compilation. `grep` would have found it.",
+   "impact": "ga05 would have been measured with the answer key sitting in the workspace. A solve there would have proved nothing, and it would have counted. Two filename-based leak checks had already passed the same tree.",
+   "cause": "`git archive` faithfully reproduces whatever is TRACKED, and GENERALISTA-ROOT tracks its own __pycache__.",
+   "fix": "`materialise` strips __pycache__ and any stray .pyc/.pyo from every task tree. General, and not about this task: bytecode is build output, it is never source, and removing it cannot change what an acceptance suite measures. Re-certified 9/9 afterwards.",
+   "risk": "The same class of leak has NOT been swept in the Phase 3 corpus, where 50 third-party repositories may track build output of their own.",
+   "dependencies": ""
+  },
+  {
+   "id": "F-122",
+   "priority": "P0",
+   "component": "campaign claims / F-109, F-116, F-117",
+   "status": "REPRODUCED",
+   "evidence": "Deterministic counterfactual replay of cohort 3 through the harness's own tools, scored with the frozen scorer, unmodified, in its own environment. Replay fidelity: 50/50 for qwen3:4b and 50/50 for ministral, gated on reproducing the answer that was actually scored. F-109: successes 40 -> 42 (sound bound), 2 rescued, 0 damaged, 529 turns / 69 273 output tokens / 743 provider-seconds saved. F-117: successes 34 -> 34, 0 rescued, 0 damaged, 80 turns / 19 258 tokens saved; of ministral's 14 paired losses only 2 had an accepted recoverable finish and both still fail. F-116: 1 demonstrable rescue (phi4-mini `_construct_field`, a paired loss), 2 more in qwen3.5 that were not paired losses, and 10 of 17 touched runs stop at ERROR_BAD_ARGUMENTS immediately after the repair.",
+   "impact": "Three claims corrected. F-117 was recorded as 'the single largest identified mechanism behind the canary's -24' and rescues ZERO of it. F-109's 99% recovery is worth +2 at n=50, inside the recorded +-2 run-to-run variance. Ministral's -24 and phi's -25 remain unexplained. What IS established is cost: half a cohort's turns.",
+   "cause": "A recovered call was being read as a recovered RESULT. The answer file already held whatever it held; reading the finish correctly would have sealed the same wrong answer sooner.",
+   "fix": "replay_state.py, counterfactual.py, counterfactual_synonyms.py: the instrument, kept, so no future fix is quoted as an improvement before it is replayed. Every claim now carries COUNTERFACTUAL_REPLAY_ESTIMATE.",
+   "risk": "Standing rule, now with three worked examples behind it: calls recovered is not accuracy gained, retrieval improved is not accuracy improved, and finish recovered is not successful finish.",
+   "dependencies": "F-109, F-116, F-117, F-118"
+  },
+  {
+   "id": "F-123",
+   "priority": "P1",
+   "component": "REPOQA corpus provenance",
+   "status": "REPRODUCED",
+   "evidence": "All 50 corpus checkouts are at a different commit from the `commit_sha` the RepoQA record names. The corpus embeds the full text of every file it draws a needle from, so this was settled by bytes rather than by hash: 12 610 corpus files compared against the checkouts, 0 differ.",
+   "impact": "The answer and the oracle are exactly the corpus's, in all five languages. What is NOT the corpus's is the repository AROUND the needle, which is a later commit -- and that is the world the agent searches. Modest, real, and previously unrecorded.",
+   "cause": "The checkouts were made from HEAD rather than from the pinned commit.",
+   "fix": "Recorded per task in PHASE3_CERTIFICATION.json rather than repaired. Re-pinning 50 repositories would change the corpus after results already exist against it.",
+   "risk": "Any Phase 3 result must state this.",
+   "dependencies": ""
+  },
+  {
+   "id": "F-124",
+   "priority": "P1",
+   "component": "my own proxy metrics",
+   "status": "FALSIFIED",
+   "evidence": "Three proxies of mine produced numbers before any example was inspected, and all three were false. (1) A single 'cut off' verdict on bare answers read 32% for qwen3.5:2b; of the first four inspected, two were genuine mid-expression stops, one was a 312-character stop no budget explains, and one was a COMPLETE answer that echoed the prompt's own delimiter -- the real figure is 2 of 50. (2) A substring test for a description naming its function flagged 7 Phase 3 tasks; all 7 were ordinary English words in prose (`base`, `min`, `set`, `env`, `swap`, `package`, `stringify`) and the identifier-context test flags exactly 1. (3) A `*_MISSION.json` leak glob flagged ga06 and ga07 for a mission file belonging to a DIFFERENT task that legitimately lives in that repository.",
+   "impact": "Each had already been written into a report or a count before it was checked. The one leak test that found a REAL answer key -- ga05's tracked bytecode -- is the one that depends on the task's actual reference text rather than on a filename.",
+   "cause": "A proxy is cheap to write and its output looks like a measurement.",
+   "fix": "All three replaced by tests that name what they matched, so the next reader can check the judgement instead of trusting it.",
+   "risk": "The campaign rule that caught all three, restated: inspect the classified examples before publishing any count from a proxy. Three in one session.",
+   "dependencies": "F-106, F-111"
   }
  ],
  "safety_record": {
