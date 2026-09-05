@@ -1366,6 +1366,66 @@
    "fix": "All three replaced by tests that name what they matched, so the next reader can check the judgement instead of trusting it.",
    "risk": "The campaign rule that caught all three, restated: inspect the classified examples before publishing any count from a proxy. Three in one session.",
    "dependencies": "F-106, F-111"
+  },
+  {
+   "id": "F-125",
+   "priority": "P0",
+   "component": "run_real_matched.py / REAL_RESULTS/QUARANTINE/p5r1",
+   "status": "REPRODUCED",
+   "evidence": "Phase 5 was launched with `nohup ... &` inside a call that was itself backgrounded. The tool reported the launch as FAILED while the child was still alive. Believing it dead I deleted its output directory, ran two single-task diagnostics, and launched a second guarded run; the second run found the directory recreated, printed 'already exists' and exited, and a live runner went on writing results for two tasks. One `run_real_matched --label p5r1` process was found alive minutes later, parented to the second guard, with two rows in results.json.",
+   "impact": "Two questions about ga02 and ga03 cannot be settled from evidence after the fact: whether one runner or two were on the card while they were measured, and which build of pair_equivalence.py the surviving process had imported -- it started either side of the fix to the regime test. Both decide whether the rows mean anything. Quarantined as PROVENANCE_UNRESOLVED, preserved in full, excluded from every conclusion.",
+   "cause": "A double background. Nothing owned the label, and liveness was not observable, so a report of failure could not be distinguished from an orphan still running.",
+   "fix": "The cohort is relaunched under a fresh label as a single process the session owns, after confirming no runner is alive. Standing rule: a cohort must be started so that exactly one process owns its label and its liveness can be checked.",
+   "risk": "This is the same failure family as F-107 and it arrived by a new route. There, foreign load contaminated a live cohort; here, my own launch did. The detector in both cases was noticing that something was still running.",
+   "dependencies": "F-107"
+  },
+  {
+   "id": "F-126",
+   "priority": "P1",
+   "component": "pair_equivalence.regime_changed",
+   "status": "FIXED",
+   "evidence": "The first regime test compared one instantaneous `utilization.gpu` sample per arm and set ga02 aside for 'GPU utilisation moved 81 -> 10'. That is not two regimes: it is one sample taken while a generation was running and one taken while the card was idle between arms. Left as written it would have set aside most of the cohort for something that was never the machine.",
+   "impact": "A pair-validity test that cannot answer its own question is worse than none: it converts an instrument artefact into an exclusion, and the exclusions would have looked principled.",
+   "cause": "Utilisation is a fast variable. Two point samples of it carry no information about a regime.",
+   "fix": "The verdict now rests on slow variables only -- temperature drift, power drift, and any active thermal slowdown, which is definitive. Utilisation is still RECORDED in every pair record so a reader can see it; it simply does not decide a verdict alone. Changed before the cohort produced any scored result, and the bounds were declared before the run.",
+   "risk": "Loosening a validity test after seeing it fire is exactly the shape of tuning-after-the-fact, so the reason is written into the code: the variable is unmeasurable at a point, not inconvenient.",
+   "dependencies": "F-107, F-108"
+  },
+  {
+   "id": "F-127",
+   "priority": "P0",
+   "component": "run_real_matched.py, both arms",
+   "status": "FIXED",
+   "evidence": "Two silent asymmetries between the arms of the comparison, both correlated with ARM. (1) TIMEOUT: the bare arm asked for 900s per generation; the GAFITAS arm inherited provider.DEFAULT_TIMEOUT of 120, which timeout_for raises to 30 + 8192/12 = 712.7s at this budget. Different patience, absent from both records. (2) RETRIES: the loop retries HTTP_STATUS / TIMEOUT / TRANSPORT / BAD_BODY twice; the bare arm caught the exception and gave up. An infrastructure allowance on one side only.",
+   "impact": "Under A4.8 either one blocks the sentence 'GAFITAS produced the difference', whatever the difference turns out to be. A dropped socket would have counted as a model failure on one arm and as nothing on the other.",
+   "cause": "The two arms constructed their providers in different places, and the retry policy lived in the loop rather than in the comparison.",
+   "fix": "PAIR_TIMEOUT, one constant used by both arms, and the bare arm now uses the loop's own PROVIDER_RETRIES and RETRYABLE_PROVIDER_KINDS rather than a second copy of them, so the policy cannot drift apart again. Proved per pair from the EFFECTIVE provider description rather than the requested one, and certified CPU-only before any GPU was spent (A4.9): 9/9 EQUIVALENT.",
+   "risk": "Neither asymmetry was visible in any run record. Both were found by reading the two arms' construction side by side, which is the only way they could have been found.",
+   "dependencies": "F-98"
+  },
+  {
+   "id": "F-128",
+   "priority": "P0",
+   "component": "run_real_matched.gafitas_arm / work.run_ticket disposal",
+   "status": "FIXED",
+   "evidence": "`work.run_ticket` deletes the workspace when the run SUCCEEDED and preserves it when it did not (preserve = outcome not in PASS, PASS_UNCONFIRMED, CANDIDATE), and `gafitas_arm` took its verdict by running the acceptance suite in that same workspace. In p5r2 ga06's agent finished DONE having written tester/verdict.py; the box was disposed and pytest returned WinError 267, so the pair was recorded INFRA_ERROR and the run reported GAFITAS 0/8. Rebuilding the frozen tree and replaying that run's OWN sealed writes gives 22 passed.",
+   "impact": "The comparison could not score any GAFITAS run whose agent finished cleanly -- it silently dropped exactly the runs most likely to be successes -- and it is ONE-SIDED, because the bare arm writes into the runner's own directory which is never disposed. The published result changes from GAFITAS 0/8 to GAFITAS 1/9, W=1, L=0.",
+   "cause": "A retention policy written for evidence preservation, read by a scorer that assumed the workspace outlived the run.",
+   "fix": "The GAFITAS arm is scored by replaying its sealed writes into a fresh frozen tree whenever the workspace is gone. Validated against itself: on the eight runs the instrument COULD score, replayed and recorded verdicts agree 8 of 8. Both verdicts are kept side by side in results.json.",
+   "risk": "Found only because an INFRA_ERROR class exists and was not allowed to be read as a model failure. Without B4's separation this would have been published as GAFITAS 0/9.",
+   "dependencies": "F-125"
+  },
+  {
+   "id": "F-129",
+   "priority": "P1",
+   "component": "Phase 5 result p5r2",
+   "status": "REPRODUCED",
+   "evidence": "granite4.1:3b, 9 certified real tasks, both arms, 0 human interventions, 0 paid calls. BARE 0/9. GAFITAS 1/9 (ga06). W=1 L=0 net=+1, T-- 8. Pair verdicts: 7 EQUIVALENT, 2 ECONOMY_CONTAMINATED, 0 PAIR_INVALID, 0 PAIR_INCOMPLETE after F-128. Evidence 9 tickets, 64 references, 64 recoverable, 0 mismatched.",
+   "impact": "WEAK_SIGNAL on the predeclared table. Real-task capability is demonstrated once; amplification is neither demonstrated nor refuted at n=9 with a single win. The bare arm produced nothing correct at all, which is itself informative: these tasks are beyond one-shot generation for this engine.",
+   "cause": "Two GAFITAS failures are NO_CHANGE_PRODUCED after 40 turns and three are BUDGET_EXHAUSTED -- five of eight failures are the harness failing to convert turns into an edit, not the engine failing to know the answer.",
+   "fix": "None yet. Recorded as the measurement it is.",
+   "risk": "Economy is ECONOMY_CONTAMINATED for the whole cohort, declared before the first result: the machine carried 100% foreign CPU load throughout.",
+   "dependencies": "F-121, F-125, F-126, F-127, F-128"
   }
  ],
  "safety_record": {
