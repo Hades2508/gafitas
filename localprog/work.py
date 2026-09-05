@@ -486,6 +486,7 @@ def run_ticket(
             system=system_prompt(ticket, protocol),
             objective=objective_text(ticket, ctx.root),
             protocol_name=protocol, max_turns=ticket.max_turns,
+            tool_role_supported=getattr(caps, "tool_role_supported", None),
             keep_turns=WORK_KEEP_TURNS, elide_over_chars=WORK_ELIDE_OVER_CHARS,
             budget_chars=budget_chars(
                 num_ctx,

@@ -502,6 +502,7 @@ def run_loop(
     elide_over_chars: int | None = None,
     budget_chars: int = 0,
     declare_tools: tuple[str, ...] | None = None,
+    tool_role_supported: bool | None = None,
 ) -> LoopResult:
     """Drive *provider* against *ctx* until it finishes or runs out of budget."""
     if protocol_name not in ("A", "B", "J"):
@@ -515,6 +516,7 @@ def run_loop(
             ELIDE_OVER_CHARS if elide_over_chars is None else elide_over_chars
         ),
         budget_chars=budget_chars,
+        tool_role_supported=tool_role_supported,
     )
     # An explicit declare_tools still wins: the frozen screen names its seven
     # and must keep naming exactly those, or it stops being comparable with the

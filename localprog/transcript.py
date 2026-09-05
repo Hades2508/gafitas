@@ -63,6 +63,11 @@ class Transcript:
     #: which is what the frozen screen uses -- its transcripts are tiny and its
     #: behaviour must not change. See budget_chars().
     budget_chars: int = 0
+    #: False when the engine has been MEASURED unable to read a result under
+    #: role="tool". The result then arrives as a user message carrying the same
+    #: bytes and the tool's name, which is what the engine can actually see.
+    #: None means unmeasured, and unmeasured keeps the tool role (F-102).
+    tool_role_supported: bool | None = None
 
     def add(self, turn: Turn) -> None:
         self.turns.append(turn)
@@ -117,7 +122,18 @@ class Transcript:
                         f"Pide un tramo mas pequeno.]"
                     )
                     self.elisions += 1
-                payload_message = {"role": "tool", "name": turn.tool_name, "content": payload}
+                if self.tool_role_supported is False:
+                    # The same bytes, through a channel this engine can read.
+                    # The tool's name is kept in the text because it is carried
+                    # by the role in the other form and losing it would change
+                    # what the model is told, not just how.
+                    payload_message = {
+                        "role": "user",
+                        "content": f"RESULTADO de {turn.tool_name}:\n{payload}",
+                    }
+                else:
+                    payload_message = {"role": "tool", "name": turn.tool_name,
+                                       "content": payload}
             rendered.append((turn.number, assistant, payload_message))
 
         def assemble() -> list[dict]:

@@ -116,6 +116,15 @@ class EngineCapabilities:
     #: The same number for the text protocol, usually far larger because no
     #: provider-side template parser stands between the tokens and us.
     text_payload_limit: int | None = UNKNOWN
+    #: Whether this engine can READ a tool result delivered under role="tool"
+    #: as the last message of the conversation -- which is the exact shape the
+    #: harness produces every single turn. Observed at the wire, never inferred
+    #: from a family: one engine answers with a single token and empty content
+    #: 3 times out of 3 on the tool role, and correctly 3 times out of 3 on the
+    #: same conversation delivered as a user message. UNKNOWN keeps the current
+    #: behaviour, because moving an engine's channel on a guess is how the
+    #: protocol rule went wrong the first time (F-102).
+    tool_role_supported: bool | None = UNKNOWN
     #: Whether the server returns this engine's reasoning in a channel of its
     #: own, separate from the answer. Observed, never inferred from the name.
     #: It changes the output budget and nothing else: an engine that thinks
