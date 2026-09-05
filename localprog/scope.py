@@ -50,6 +50,24 @@ def _posix(text: str) -> str:
     return text.replace("\\", "/").strip()
 
 
+def escapes_upward(rel: str) -> bool:
+    """Whether a relative path can leave the tree it is relative to.
+
+    A `..` segment, an absolute path, or a Windows drive letter. Any of the
+    three means the string is not a path INSIDE the repository, so no write
+    scope can contain it however its pattern is written (F-113).
+
+    Checked on segments rather than by substring, so a file honestly named
+    `..hidden` or `a..b.py` is not refused for containing two dots.
+    """
+    text = _posix(rel)
+    if not text:
+        return False
+    if text.startswith("/") or (len(text) > 1 and text[1] == ":"):
+        return True
+    return any(part == ".." for part in text.split("/"))
+
+
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     """fnmatch, except ``*`` stops at ``/`` and ``**`` does not.
 
@@ -155,7 +173,18 @@ class WriteScope:
         return bool(self._write or self._new)
 
     def allows(self, rel: str, *, creating: bool) -> bool:
+        """Whether this scope permits writing *rel*, a path relative to the repo.
+
+        Refuses anything that escapes upward BEFORE consulting the patterns. The
+        glob translation does not normalise `..`, so `src/**/*.py` matches
+        `src/../etc/passwd.py` on the strings alone -- which was never reachable,
+        because `_resolve` rejects `..` first. The check is here as well so the
+        guarantee belongs to this method rather than to whoever calls it
+        (F-113).
+        """
         rel = _posix(rel)
+        if escapes_upward(rel):
+            return False
         rules = self._write + self._new if creating else self._write
         return any(rule.matches(rel) for rule in rules)
 

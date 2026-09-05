@@ -31,6 +31,7 @@ from typing import Any
 
 from . import deps, retrieval
 from .scope import WriteScope
+from . import sentinel as _sentinel
 from .errors import (
     ERROR_BAD_ARGUMENTS,
     ERROR_BAD_PATTERN,
@@ -177,6 +178,14 @@ class ToolContext:
     #: Every command ``run`` executed, in order. Cheap to keep, and it is
     #: what makes a debugging session reproducible after the fact.
     commands_run: list[dict] = field(default_factory=list)
+    #: The repository this workspace was made from, when there is one. The
+    #: factory promises not to modify it, and until F-112 nothing in the
+    #: harness checked that promise -- it was verified by hand, externally,
+    #: once. The sentinel checks it around every child process.
+    source_repo: Path | None = None
+    #: What the sentinel saw around each ``run``. Kept even when empty: a
+    #: reader needs to see that the check happened and what it did not cover.
+    outside_writes: list = field(default_factory=list)
     #: Per-test outcomes of the WHOLE suite before the agent touched
     #: anything. Empty when the ticket disabled the full-suite check.
     #: This is what makes it possible to tell the agent, during the run,
@@ -1927,6 +1936,13 @@ def run(ctx: ToolContext, argv: Any, timeout: Any = None) -> dict:
         )
 
     real_argv, kind = _resolve_command(argv)
+    # F-112. The tools cannot stop a child writing outside the repository and
+    # this does not pretend to: it looks before and after, at a bounded watch
+    # set, and reports what it saw AND what it could not see. An honest partial
+    # check that runs every time beats a thorough one that is too slow to keep.
+    watch = _sentinel.Sentinel(workspace=ctx.root, source_repo=ctx.source_repo,
+                               argv=real_argv)
+    watch.arm()
     try:
         proc = subprocess.run(
             real_argv, cwd=str(ctx.root), capture_output=True, text=True,
@@ -1935,10 +1951,14 @@ def run(ctx: ToolContext, argv: Any, timeout: Any = None) -> dict:
     except subprocess.TimeoutExpired as exc:
         head = exc.stdout if isinstance(exc.stdout, str) else ""
         tail = exc.stderr if isinstance(exc.stderr, str) else ""
-        ctx.commands_run.append({"argv": argv, "exit_code": None, "timed_out": True})
+        seen = watch.check()
+        ctx.outside_writes.append(seen)
+        ctx.commands_run.append({"argv": argv, "exit_code": None, "timed_out": True,
+                                 "sentinel": seen})
         return {
             "argv": argv, "kind": kind, "exit_code": None, "timed_out": True,
             "output": (head + tail)[-RUN_OUTPUT_TAIL:] + f"\n[TIMEOUT tras {limit:g}s]",
+            "sentinel": seen,
         }
     except OSError as exc:
         # Allowlisted but not installed. That is a fact about this machine the
@@ -1948,11 +1968,24 @@ def run(ctx: ToolContext, argv: Any, timeout: Any = None) -> dict:
         ) from None
 
     output = proc.stdout + proc.stderr
-    ctx.commands_run.append({"argv": argv, "exit_code": proc.returncode, "timed_out": False})
+    seen = watch.check()
+    ctx.outside_writes.append(seen)
+    ctx.commands_run.append({"argv": argv, "exit_code": proc.returncode,
+                             "timed_out": False, "sentinel": seen})
     result = {
         "argv": argv, "kind": kind, "exit_code": proc.returncode,
         "timed_out": False, "output": output[-RUN_OUTPUT_TAIL:],
+        "sentinel": seen,
     }
+    if not _sentinel.clean(seen):
+        # Told to the agent, not hidden in the record. A command that wrote
+        # outside the workspace is something it needs to know it did.
+        result["note"] = (result.get("note", "") +
+                          "\n[OJO: este comando escribio FUERA del workspace: "
+                          + ", ".join(f"{c['kind']} {c['name']}"
+                                      for c in seen["outside_writes"][:5])
+                          + ". El workspace es el unico sitio donde puedes "
+                            "trabajar.]")
     if len(output) > RUN_OUTPUT_TAIL:
         result["note"] = f"[salida truncada a los ultimos {RUN_OUTPUT_TAIL} caracteres]"
     return result

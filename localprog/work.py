@@ -228,6 +228,10 @@ class WorkResult:
     tools_used: dict = field(default_factory=dict)
     changed_files: list[str] = field(default_factory=list)
     unauthorised_writes: list[str] = field(default_factory=list)
+    #: One sentinel report per `run`, in order. Empty when the agent never ran
+    #: a command. NOT the same thing as unauthorised_writes, which can only
+    #: ever describe writes INSIDE the repository (F-112).
+    outside_writes: list = field(default_factory=list)
     commands_run: list[dict] = field(default_factory=list)
     finish_status: str | None = None
     finish_summary: str = ""
@@ -262,6 +266,7 @@ class WorkResult:
             "tools_used": self.tools_used,
             "changed_files": self.changed_files,
             "unauthorised_writes": self.unauthorised_writes,
+            "outside_writes": self.outside_writes,
             "commands_run": self.commands_run,
             "finish_status": self.finish_status, "finish_summary": self.finish_summary,
             "usage": self.usage,
@@ -469,6 +474,11 @@ def run_ticket(
             # ablation measured what naming the copy is worth: without the
             # turn-zero shortlist granite falls from 60% to 20%.
             opening_candidate=orient.top_candidate(box.path, ticket.objective),
+            # F-112. The repository this workspace was made from. The factory
+            # promises not to modify it and nothing in the harness checked that
+            # promise -- it was verified once, by hand, outside the code. The
+            # sentinel now checks it around every child process.
+            source_repo=Path(box.source) if box.source else None,
             # F-38: hand the agent the same baseline the conscience will use,
             # so "you broke something" can be said during the run rather than
             # discovered afterwards and charged to it.
@@ -555,6 +565,10 @@ def run_ticket(
         post_files = _tracked_files(box.path)
         changed = _changed_since(pre_files, post_files)
         result.changed_files = sorted(changed)
+        # Everything the sentinel saw around every `run`, kept whether or not it
+        # saw anything: a reader needs to know the check happened and what it
+        # did not cover (F-112).
+        result.outside_writes = list(getattr(ctx, "outside_writes", []))
         result.unauthorised_writes = sorted(
             rel for rel in changed if not ticket.scope.allows(rel, creating=True)
         )
