@@ -1114,6 +1114,18 @@
    "fix": "The probe ends on the result, samples three times, and uses each engine's own output budget -- a fixed 512 had made both reasoning engines INCONCLUSIVE, which was F-95 reappearing inside the probe built to be free of it.",
    "risk": "Recorded as a standing rule: a probe that does not reproduce the harness's own shape measures nothing.",
    "dependencies": "F-90"
+  },
+  {
+   "id": "F-104",
+   "priority": "P0",
+   "component": "campaign methodology",
+   "status": "QUANTIFIED",
+   "evidence": "granite4.1:3b, the same 20 needles, differing only in the bare arm's output budget. At 1024 (the campaign's setting): bare 6, GAFITAS 11, W=8 L=3, net +5, with cap-hits measured at 3 of 8 on a separate ladder. At 8192: bare 9, GAFITAS 12, W=6 L=3, net +3, cap-hits 0 of 20.",
+   "impact": "About 40% of the measured net advantage on this sample was the harness truncating the bare arm, not GAFITAS improving on it. Every amplification figure this campaign has published is overstated by an amount of this order. The amplification SURVIVES -- +3 net, and the GAFITAS arm improved too, 11 to 12 -- but it is smaller than reported.",
+   "cause": "F-101. CONSERVATIVE_OUTPUT of 1024 cut off the bare arm, which answers in one long generation, while never binding the GAFITAS arm, which spends a median 46 tokens per call.",
+   "fix": "The budget is fixed (F-101). This entry exists to record the SIZE of the bias rather than only its direction, and to state that every prior cohort's delta is now known to be inflated. n=20: indicative, not definitive. The next full cohort measures it properly, and it records cap-hits on both arms so this can never again be invisible.",
+   "risk": "Prior published deltas must be read as upper bounds until the next cohort lands.",
+   "dependencies": "F-96, F-100, F-101"
   }
  ],
  "safety_record": {
@@ -1131,7 +1143,8 @@
   "F-96 invalidates the five-engine expansion cohort's deltas; the cohort is preserved and excluded from conclusions",
   "latency cost of the F-95 reasoning budget is measured but not yet optimised",
   "F-101 unresolved: the bare arm truncates at 1024 for at least one engine, so no cohort is fair for it until the budget is settled by measurement",
-  "qwen3:4b's 316 dead turns remain unexplained; the tool role is NOT the cause (7 of 8 engines read it correctly) and the sealed emission text now exists to diagnose them"
+  "qwen3:4b's 316 dead turns remain unexplained; the tool role is NOT the cause (7 of 8 engines read it correctly) and the sealed emission text now exists to diagnose them",
+  "every pre-F-101 amplification figure is an upper bound; the bias is measured at roughly 40% of net advantage on one 20-case sample"
  ],
  "objective": "Remove the paid tier from the normal programming path. Luna and Claude become construction, teaching and audit tools; they are not runtime dependencies for the supported task classes.",
  "final_measurement": {
