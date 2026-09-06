@@ -140,6 +140,34 @@ would you your yours use used using return returns given based one two also may 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _CAMEL = re.compile(r"([a-z0-9])([A-Z])")
 
+#: Directory components that make a path a test path.
+_TEST_DIRS = frozenset({"test", "tests", "testing", "_test", "__tests__",
+                        "spec", "specs"})
+
+
+def is_test_path(path: str) -> bool:
+    """Whether this looks like a test file. Conservative on purpose.
+
+    A directory component that says so, or a basename that announces itself.
+    Anything cleverer would be guessing, and a guess here quietly changes what
+    the agent is shown.
+
+    THIS DOES NOT RANK ANYTHING. It was written for a change that DID -- test
+    regions pushed below non-test ones -- and that change was measured and
+    rejected: RepoQA python fell 6.0 points, because 8 of its 100 needles live
+    in test files and demoting tests pushes the answer down whenever the answer
+    is one. The ranking cannot know which case it is in; only the agent can.
+    So this is used to REPORT the mix, and to honour an exclusion the agent
+    asks for by name. See TESTS_LAST_RESULT.md.
+    """
+    parts = path.split("/")
+    if any(part.lower() in _TEST_DIRS for part in parts[:-1]):
+        return True
+    base = parts[-1].lower()
+    return base.startswith("test_") or base.endswith(
+        ("_test.py", "_tests.py", ".test.ts", ".test.js", ".spec.ts",
+         ".spec.js", "test.java"))
+
 
 def tokenize(text: str) -> list[str]:
     """Words, with identifiers split the way a programmer reads them.

@@ -873,7 +873,8 @@ def _any_match(ctx: ToolContext, rx, glob: str) -> bool:
     return False
 
 
-def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = None) -> dict:
+def search_code(ctx: ToolContext, query: Any, limit: Any = None,
+                path: Any = None, exclude_tests: Any = False) -> dict:
     """Find the code a description is talking about, by meaning rather than literal.
 
     The organ that was missing (F-59). ``grep`` answers "where does this exact
@@ -940,13 +941,40 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
             "no hay ningun fichero de codigo indexable en este repositorio.",
         )
 
+    # F-163. `exclude_tests` is the AGENT's choice, never the index's guess.
+    # Demoting test files by default was implemented and measured: it gained
+    # 9.8 points on SWE-bench file-finding and cost RepoQA python 6.0, because
+    # 8 of its 100 needles LIVE in test files and a blanket demotion pushes the
+    # answer down whenever the answer is one. The ranking cannot know which
+    # case it is in and the agent always can, so the choice belongs here as an
+    # argument rather than there as a policy. See TESTS_LAST_RESULT.md.
+    if not isinstance(exclude_tests, bool):
+        raise InvalidCall(ERROR_BAD_ARGUMENTS,
+                          "exclude_tests debe ser true o false")
+
     # Over-fetch when filtering by path, so a subtree still yields `limit` rows.
     narrowed = prefix or only_file
-    raw = index.search(query, limit=limit if not narrowed else min(limit * 20, 1000))
+    over = narrowed or exclude_tests
+    raw = index.search(query, limit=limit if not over else min(limit * 20, 1000))
     if only_file:
-        raw = [pair for pair in raw if pair[0].path == only_file][:limit]
+        raw = [pair for pair in raw if pair[0].path == only_file]
     elif prefix:
-        raw = [pair for pair in raw if pair[0].path.startswith(prefix)][:limit]
+        raw = [pair for pair in raw if pair[0].path.startswith(prefix)]
+    tests_seen = sum(1 for pair in raw if retrieval.is_test_path(pair[0].path))
+    if exclude_tests:
+        raw = [pair for pair in raw if not retrieval.is_test_path(pair[0].path)]
+    raw = raw[:limit]
+
+    if not raw and exclude_tests and tests_seen:
+        # Not "nothing matched". Everything matched and all of it was tests,
+        # which is a different fact and points at a different next move.
+        raise ToolError(
+            ERROR_NO_MATCH,
+            f"las {tests_seen} coincidencias de {query!r} estan TODAS en "
+            f"ficheros de test, y las has excluido con exclude_tests=true. "
+            f"Repite sin exclude_tests para verlas: puede que lo que buscas "
+            f"solo exista ahi, o que el codigo que lo implementa se llame de "
+            f"otra forma.")
 
     if not raw:
         known, unknown = index.matched_terms(query)
@@ -1004,6 +1032,21 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
     # generalised "not in this file" into "not in this repository".
     #
     # This neither widens the search nor overrides the agent's choice of scope.
+    # F-163, the reporting half. The index knows how many of these rows are
+    # tests and the agent cannot see it without reading every path. On a
+    # SWE-bench issue title the top of the list is very often the test FOR the
+    # file wanted -- a test carries the same identifiers AND describes the
+    # behaviour in prose, which is exactly what an issue title is, and in
+    # django `tests/` is 70.3% of the index. Saying so costs one line and
+    # leaves the judgement where it belongs.
+    returned_tests = sum(1 for c in candidates
+                         if retrieval.is_test_path(c["path"]))
+    if returned_tests and not exclude_tests:
+        scope_note += (
+            f"{NEWLINE}[{returned_tests} de {len(candidates)} candidatos son "
+            f"ficheros de TEST. Si buscas el codigo que fallan, no el test que "
+            f"lo comprueba, repite con exclude_tests=true.]")
+
     # It reports what was actually looked at, which the instrument knew and did
     # not say.
     searched_regions = len(index)
@@ -2698,7 +2741,7 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "read_file": (("path",), ("start", "end")),
     "list_dir": ((), ("path", "recursive")),
     "grep": (("pattern",), ("glob", "context", "ignore_case")),
-    "search_code": (("query",), ("limit", "path")),
+    "search_code": (("query",), ("limit", "path", "exclude_tests")),
     "list_symbols": (("path",), ()),
     "read_symbol": (("path", "name"), ()),
     "edit": (("path", "old", "new"), ()),
@@ -3148,7 +3191,11 @@ TOOL_DOC: dict[str, str] = {
         "lineas y la linea de declaracion. Es la herramienta para empezar cuando "
         "NO sabes como se llama ni donde esta lo que buscas -- grep necesita que "
         "aciertes el literal exacto, esto no. Funciona en cualquier lenguaje. "
-        "Despues lee el candidato que encaje con read_symbol o read_file."
+        "Despues lee el candidato que encaje con read_symbol o read_file. "
+        "exclude_tests=true deja fuera los ficheros de test: util cuando "
+        "buscas el codigo que falla y no el test que lo comprueba, porque un "
+        "test suele parecerse MAS a la descripcion del problema que el codigo "
+        "en si."
     ),
     "list_symbols": (
         "Devuelve lo que define un fichero Python -- funciones, clases y tambien "
@@ -3246,6 +3293,7 @@ PARAM_DOC: dict[str, str] = {
     "pattern": "Expresion regular de Python. Se busca linea a linea.",
     "query": "Que buscas, en palabras. PEGA EL TEXTO DEL OBJETIVO TAL CUAL, sin resumirlo: cuantas mas palabras le des, mejor ordena. Resumir la descripcion en cuatro palabras empeora el resultado.",
     "limit": "Cuantos candidatos devolver (1-50). Por defecto 15.",
+    "exclude_tests": "Booleano; si es True, deja fuera los ficheros de test. Util cuando buscas el codigo que falla y no el test que lo comprueba: un test suele parecerse MAS a la descripcion del problema que el codigo en si, asi que copa los primeros puestos. Por defecto False.",
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
     "context": "Lineas de contexto alrededor de cada coincidencia (0-20). 0 solo da la linea.",
     "ignore_case": "Booleano; si es True, busca sin distinguir mayusculas y minusculas. Por defecto False.",
@@ -3331,6 +3379,7 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "glob": {"type": "string"},
         "context": {"type": ["integer", "null"]},
         "ignore_case": {"type": "boolean"},
+        "exclude_tests": {"type": "boolean"},
         "old": {"type": "string"},
         "new": {"type": "string"},
         "content": {"type": "string"},
