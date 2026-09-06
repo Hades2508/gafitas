@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import deps, retrieval
-from . import rejection
+from . import adoption, rejection
 from .scope import WriteScope
 from . import sentinel as _sentinel
 from .errors import (
@@ -201,6 +201,14 @@ class ToolContext:
     #: were byte-identical repeats against an unchanged file; one run sent the
     #: same bytes fourteen times, each costing a turn to be told the same thing.
     rejection_memory: Any = None
+    #: Every moment a primitive could have run, and what was chosen instead.
+    #: Recording is unconditional; OFFERING is the treatment and is separate.
+    adoption_ledger: Any = None
+    #: The V3 treatment. When True, a refusal that a primitive could have
+    #: avoided names that primitive with a call built from what the harness
+    #: already knows -- the path, the resolvable symbols -- and never the body.
+    #: False is the control: the surface as it is today.
+    concrete_offers: bool = False
     test_timeout: float = TEST_TIMEOUT_SECONDS
     run_timeout: float = RUN_TIMEOUT_SECONDS
     #: Set once a run_tests call reported every declared test green. Read by
@@ -2764,6 +2772,59 @@ def _target_of(args: dict) -> str | None:
     return None
 
 
+def _offer_a_primitive(ctx: Any, name: str, raw_args: Any, code: str) -> str:
+    """Name the primitive this refusal could have been avoided with.
+
+    Recording an opportunity is unconditional; OFFERING is the treatment, and it
+    only happens when `ctx.concrete_offers` is on. That separation is what makes
+    the A/B possible: the control still records everything it declined to say.
+
+    The offer is built from what the harness already knows -- the path, and the
+    symbols that resolve in it. **The body is never filled in.** Choosing what
+    the code should say is the model's work, and writing it here would be
+    answering the task rather than pointing at a tool.
+
+    It never removes an alternative. `write_file` and `edit` remain exactly as
+    available as before; adoption that came from hiding the old path would not
+    be adoption.
+    """
+    ledger = getattr(ctx, "adoption_ledger", None)
+    rel = None
+    try:
+        args = normalise_arguments(raw_args)
+        args, _ = apply_synonyms(name, args)
+        rel = _target_of(args)
+    except Exception:                                        # noqa: BLE001
+        args = {}
+
+    if name in WRITE_TOOLS and ledger is not None:
+        adoption.observe(ledger, turn=getattr(ctx, "turn", 0), tool=name,
+                         root=ctx.root, rel=rel, opened=ctx.opened,
+                         accepted=False,
+                         offers=({"replace_file": {"offered": True, "concrete": True},
+                                  "replace_symbol_body": {"offered": True,
+                                                          "concrete": True}}
+                                 if getattr(ctx, "concrete_offers", False) else None))
+
+    if not getattr(ctx, "concrete_offers", False) or name not in WRITE_TOOLS:
+        return ""
+    if name in ("replace_file", "replace_symbol_body"):
+        # Already using the primitive; pointing at it would be noise.
+        return ""
+
+    lines = []
+    can_file, _why = adoption.file_is_replaceable(ctx.root, rel, opened=ctx.opened)
+    can_symbol, _why2, symbols = adoption.symbol_is_replaceable(ctx.root, rel)
+    if can_symbol:
+        lines.append("  " + adoption.concrete_offer("replace_symbol_body", rel, symbols))
+    if can_file:
+        lines.append("  " + adoption.concrete_offer("replace_file", rel))
+    if not lines:
+        return ""
+    return (NEWLINE + "  Otras formas de expresar este cambio, con lo que ya se "
+            "sabe de este fichero:" + NEWLINE + NEWLINE.join(lines))
+
+
 def normalise_arguments(raw: Any) -> dict:
     """Coerce what providers actually send into a dict, or say why not.
 
@@ -2845,6 +2906,12 @@ def dispatch(ctx: ToolContext, name: Any, raw_args: Any) -> ToolOutcome:
             # Something came back that the agent did not already have, so the
             # next write is acting on it rather than re-guessing.
             ctx.learned_since_write = True
+        ledger = getattr(ctx, "adoption_ledger", None)
+        if ledger is not None and name in WRITE_TOOLS:
+            adoption.observe(ledger, turn=getattr(ctx, "turn", 0), tool=name,
+                             root=ctx.root, rel=_target_of(args),
+                             opened=ctx.opened, accepted=True)
+
         notes = []
         if renamed:
             # Said out loud on purpose. The call worked, and the agent still
@@ -2864,12 +2931,18 @@ def dispatch(ctx: ToolContext, name: Any, raw_args: Any) -> ToolOutcome:
         if (memory is not None and signature is not None
                 and exc.code != ERROR_REPEATED_REJECTED_EDIT):
             memory.remember(signature, state, code=exc.code, detail=exc.detail)
-        return ToolOutcome(name=str(name), ok=False, feedback=exc.feedback(), code=exc.code, tool_error=True)
+        extra = _offer_a_primitive(ctx, str(name), raw_args, exc.code)
+        return ToolOutcome(name=str(name), ok=False,
+                           feedback=exc.feedback() + extra, code=exc.code,
+                           tool_error=True)
     except InvalidCall as exc:
         if (memory is not None and signature is not None
                 and exc.code != ERROR_REPEATED_REJECTED_EDIT):
             memory.remember(signature, state, code=exc.code, detail=exc.detail)
-        return ToolOutcome(name=str(name), ok=False, feedback=exc.feedback(), code=exc.code, invalid_call=True)
+        extra = _offer_a_primitive(ctx, str(name), raw_args, exc.code)
+        return ToolOutcome(name=str(name), ok=False,
+                           feedback=exc.feedback() + extra, code=exc.code,
+                           invalid_call=True)
     except HarnessInvalid:
         raise
     except Exception as exc:  # noqa: BLE001 - deliberate catch-all, see docstring
