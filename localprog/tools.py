@@ -22,6 +22,7 @@ import difflib
 import hashlib
 import re
 import subprocess
+import textwrap
 import sys
 import traceback
 from collections import Counter
@@ -1612,6 +1613,115 @@ def replace_file(ctx: ToolContext, path: Any, content: Any,
             + _mission_output_ready(ctx))
 
 
+def replace_symbol_body(ctx: ToolContext, path: Any, name: Any,
+                        body: Any) -> str:
+    """Replace the BODY of one named symbol, keeping its declaration.
+
+    MEASURED
+    --------
+    smokeV1 left syntax at 20 of 30 refusals, and 30 of the 35 syntax refusals
+    in p5r3 were genuinely invalid code. One run wrote ten invalid whole-module
+    payloads for a single file. Asking a 3B engine for a whole module in one
+    shot is asking it to get thousands of characters right at once; asking for
+    one function body is asking for tens.
+
+    THE CONTRACT, WHICH IS NOT PYTHON-SPECIFIC
+    ------------------------------------------
+    ``SYMBOL_ID -> SPAN -> REPLACE``. Resolving a name to a span is the only
+    language-dependent step; everything after it is text. A language without a
+    symbol index declines cleanly here rather than guessing a range, which is
+    the same rule read_symbol and copy_code already follow.
+
+    WHAT THIS DOES FOR THE MODEL, AND WHAT IT REFUSES TO DO
+    ------------------------------------------------------
+    It keeps the declaration -- the ``def`` line, its decorators, its signature
+    -- so a body that would have broken them cannot. And it re-indents the body
+    supplied to match the declaration it is going under, which is PLACEMENT, not
+    content: five of p5r3's thirty-five syntax refusals were fragments that
+    parsed perfectly on their own and broke the file when spliced in at the
+    wrong indentation.
+
+    It does NOT repair the body semantically. It dedents and re-indents, and
+    then the whole file must parse or nothing is written. A body that is wrong
+    is refused, not corrected: the harness does not know what the code should
+    do and pretending otherwise would be inventing an answer.
+    """
+    rel, target = _resolve(ctx, path)
+    _check_writable(ctx, rel, creating=False)
+    if not isinstance(name, str) or not name.strip():
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "name debe ser el nombre de un simbolo")
+    if not isinstance(body, str):
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "body debe ser una cadena")
+    body, escape_note = _unescape_if_flattened("body", body)
+    if not body.strip():
+        raise InvalidCall(
+            ERROR_BAD_ARGUMENTS,
+            "body no puede estar vacio: seria borrar el cuerpo del simbolo.")
+
+    source = _read_text(rel, target)
+    ctx.opened.add(rel)
+    # Fails closed on an ambiguous or absent symbol, and names the near misses.
+    resolved, node, _found, start, end = _symbol_span(rel, source, name.strip())
+
+    inner = getattr(node, "body", None)
+    if not inner:
+        raise ToolError(
+            ERROR_NO_MATCH,
+            f"{resolved!r} en {rel!r} no tiene un cuerpo que reemplazar.")
+    first = inner[0].lineno
+    if first <= node.lineno:
+        # `def f(): return 1` -- declaration and body share a line, so there is
+        # no span that is only the body. Declined rather than guessed at.
+        raise ToolError(
+            ERROR_BAD_ARGUMENTS,
+            f"{resolved!r} tiene la declaracion y el cuerpo en la misma linea, "
+            f"asi que no hay un cuerpo que sustituir por separado.\n"
+            f"  Usa edit(path={rel!r}, old=..., new=...) para esa linea.")
+
+    lines = source.splitlines()
+    existing = lines[first - 1:end]
+    indent = existing[0][:len(existing[0]) - len(existing[0].lstrip())] if existing else "    "
+
+    # Placement, not content: normalise whatever indentation arrived and put it
+    # under the declaration at the indentation that declaration requires.
+    supplied = textwrap.dedent(body.strip("\n")).rstrip()
+    if not supplied.strip():
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "body no puede estar vacio")
+    placed = NEWLINE.join((indent + line) if line.strip() else ""
+                          for line in supplied.split(NEWLINE))
+
+    candidate = NEWLINE.join(lines[:first - 1] + placed.split(NEWLINE) + lines[end:])
+    if source.endswith(NEWLINE) and not candidate.endswith(NEWLINE):
+        candidate += NEWLINE
+    if candidate == source:
+        raise ToolError(
+            ERROR_NOTHING_CHANGED,
+            f"el cuerpo que envias es identico al que ya tiene {resolved!r}.")
+
+    try:
+        ast.parse(candidate)
+    except SyntaxError as exc:
+        raise ToolError(
+            ERROR_SYNTAX_AFTER_EDIT,
+            f"{rel!r} no parsearia con ese cuerpo en {resolved!r}:\n"
+            + _syntax_report(candidate, exc, rel)
+            + "\n  NO se ha escrito nada.",
+        ) from None
+    except (ValueError, RecursionError) as exc:
+        raise ToolError(ERROR_SYNTAX_AFTER_EDIT,
+                        f"{rel!r}: {exc}. NO se ha escrito nada.") from None
+
+    _write_text(target, candidate)
+    ctx.changed_files.add(rel)
+    ctx.write_counts[rel] = ctx.write_counts.get(rel, 0) + 1
+    ctx.learned_since_write = False
+    return (f"replace_symbol_body aplicada en {rel}: cuerpo de {resolved!r} "
+            f"({len(existing)} lineas -> {len(placed.splitlines())})"
+            + escape_note
+            + _rewrite_note(ctx, rel)
+            + _mission_output_ready(ctx))
+
+
 def _mission_output_ready(ctx: ToolContext) -> str:
     """Say that what the mission asked to be created now exists.
 
@@ -2526,6 +2636,7 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "write_file": (("path", "content"), ()),
     "copy_code": (("src", "into"), ("name", "start", "end")),
     "replace_file": (("path", "content"), ("expected_sha256",)),
+    "replace_symbol_body": (("path", "name", "body"), ()),
     "run": (("argv",), ("timeout",)),
     "run_tests": ((), ("node_ids",)),
     "finish": ((), ("summary", "status")),
@@ -2554,6 +2665,9 @@ SYNONYMS: dict[str, dict[str, tuple[str, ...]]] = {
     "write_file": {"content": ("text", "body", "new_content")},
     "replace_file": {"content": ("text", "body", "new_content", "new"),
                      "path": ("file", "target")},
+    "replace_symbol_body": {"body": ("content", "new", "new_body", "code"),
+                            "name": ("symbol", "function"),
+                            "path": ("file", "src")},
     "grep": {"pattern": ("query", "regex")},
     "search_code": {"query": ("pattern", "q")},
     "run": {"argv": ("command", "cmd", "args")},
@@ -2595,6 +2709,7 @@ _IMPL = {
     "write_file": write_file,
     "copy_code": copy_code,
     "replace_file": replace_file,
+    "replace_symbol_body": replace_symbol_body,
     "run": run,
     "run_tests": run_tests,
     "finish": finish,
@@ -2636,7 +2751,8 @@ class ToolOutcome:
 
 
 #: The tools that change the tree. Only these are remembered as refusals.
-WRITE_TOOLS = ("edit", "replace_lines", "write_file", "replace_file", "copy_code")
+WRITE_TOOLS = ("edit", "replace_lines", "write_file", "replace_file",
+               "replace_symbol_body", "copy_code")
 
 
 def _target_of(args: dict) -> str | None:
@@ -2844,6 +2960,14 @@ TOOL_DOC: dict[str, str] = {
         "existe y no lo has creado tu en esta mision: para sustituir uno que ya "
         "estaba en el repositorio usa replace_file."
     ),
+    "replace_symbol_body": (
+        "Sustituye SOLO el cuerpo de una funcion o clase que ya existe, "
+        "conservando su declaracion, sus decoradores y su firma. Es la forma "
+        "mas segura de cambiar codigo: escribes decenas de lineas en vez de un "
+        "fichero entero, la indentacion la coloca la herramienta, y si el "
+        "resultado no parsea no se escribe nada. Falla si el simbolo no existe "
+        "o es ambiguo."
+    ),
     "replace_file": (
         "Sustituye el contenido COMPLETO de un fichero que YA existe. Falla si "
         "el fichero no existe (para eso esta write_file) y falla si no lo has "
@@ -2904,6 +3028,7 @@ PARAM_DOC: dict[str, str] = {
     "old": "El texto exacto que hay ahora en el fichero, incluida su indentacion. Debe ser unico.",
     "new": "El texto que lo sustituye. Cadena vacia para borrar el fragmento.",
     "content": "Contenido nuevo: el fichero entero en write_file y replace_file, o el texto que sustituye al rango en replace_lines.",
+    "body": "El cuerpo nuevo del simbolo, SIN su linea de declaracion. La indentacion se ajusta sola.",
     "expected_sha256": "Opcional: el sha256 que esperas que tenga el fichero ahora. Si no coincide, la escritura se rechaza en vez de pisar una version mas nueva.",
 
     "argv": 'Comando como lista de cadenas: ["python", "-m", "pytest", "-x", "tests/test_a.py"].',
@@ -2993,6 +3118,7 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "summary": {"type": "string"},
         "status": {"type": "string", "enum": list(FINISH_STATUSES)},
         "expected_sha256": {"type": ["string", "null"]},
+        "body": {"type": "string"},
     }
     if only is not None:
         unknown = [n for n in only if n not in SPECS]

@@ -1510,6 +1510,30 @@
    "fix": "None yet.",
    "risk": "Any threshold must be validated against the runs where new information DOES appear late: 6 events occurred in turns 31-40 and cutting there would have removed them.",
    "dependencies": "F-134"
+  },
+  {
+   "id": "F-137",
+   "priority": "P0",
+   "component": "smokeV1 / REJECTION_MEMORY",
+   "status": "REPRODUCED",
+   "evidence": "V1 smoke on four predeclared tasks. Against the frozen control for those same four: ACCEPTED_EDIT_RATE 1/4 -> 2/4, EVALUABLE_PATCH_RATE 1/4 -> 2/4, SUCCESS 0/4 -> 0/4, EDIT_ATTEMPT_ACCEPTANCE 1/47 -> 2/32. ga03 and ga04 gained an evaluable patch (0 accepted -> 1 each, turns 33->19 and 40->14); ga05 unchanged as designed; ga10 LOST the evaluable patch it had (1 accepted -> 0). And the decisive negative: REJECTION_MEMORY refusals across the entire smoke = 0.",
+   "impact": "The mechanism built to absorb 25 identical repeats never engaged, so V1's observed movement CANNOT be attributed to it. One task of net difference at n=4 with another moving the other way is exactly the size this campaign has already learned not to read as a signal. NO_GO as written, INCONCLUSIVE as a description.",
+   "cause": "In these runs the model did not resend identical payloads. Whether that is the improved refusal messages changing its behaviour or ordinary run-to-run variance cannot be separated by one smoke.",
+   "fix": "None. REJECTION_MEMORY stays in -- SAFE_BY_REPLAY over 1018 historical attempts, and it costs nothing when it does not fire -- but it is UNVALIDATED IN LIVE RUNNING and must not be credited until a run triggers it.",
+   "risk": "The temptation here is to read 1/4 -> 2/4 as the intervention working. The mechanism logged zero activations; that reading is unavailable.",
+   "dependencies": "F-134, F-135"
+  },
+  {
+   "id": "F-138",
+   "priority": "P0",
+   "component": "localprog edit surface / code validity",
+   "status": "REPRODUCED",
+   "evidence": "Rejection codes across the four smoke tasks moved from {EMPTY_OLD 9, FILE_EXISTS 3, SYNTAX 27, MISSING_ARG 3, NO_MATCH 3, BAD_ARGS 1} to {SYNTAX 20, EMPTY_OLD 5, FILE_NOT_FOUND 2, NO_MATCH 1, MISSING_ARG 1, NOT_IN_WRITE_SCOPE 1}. ERROR_FILE_EXISTS is gone. Syntax is now 20 of 30 rejections. ga10 alone produced ten invalid whole-file payloads for one module that does not exist yet.",
+   "impact": "The bottleneck moved from 'the interface cannot express this intent' to 'the code is invalid'. That is the operator's own NO_GO branch and it promotes replace_symbol_body to P0 with a far cleaner hypothesis than before: shrink the unit the engine must get right from a whole file to one symbol body.",
+   "cause": "A 3B engine asked for a whole module in one shot gets it wrong most of the time, and the surface still makes whole-file writes the natural expression for a create-a-module task.",
+   "fix": "Not built. This is the next intervention, measured before being chosen.",
+   "risk": "ga10's regression is this class, not a V1 defect: in p5r3 one of its twelve payloads happened to parse and here none did. Attributing it to V1 would be as wrong as attributing ga03's gain to the rejection memory.",
+   "dependencies": "F-137"
   }
  ],
  "safety_record": {
