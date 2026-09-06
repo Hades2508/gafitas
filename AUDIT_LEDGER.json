@@ -1594,6 +1594,42 @@
    "fix": "None. Recorded as the measurement it is.",
    "risk": "The funnel is now fully mapped and the remaining stage is the hard one: 4/4 patches exist, are valid, are in scope, and are wrong. Four cohorts have produced exactly one correct patch, ga06 in p5r2, which did not reproduce.",
    "dependencies": "F-141, F-142"
+  },
+  {
+   "id": "F-144",
+   "priority": "P0",
+   "component": "ENGINE_DISCRIMINATION_V1",
+   "status": "REPRODUCED",
+   "evidence": "Same harness, same four frozen tasks, same oracle and scorer, three engines. granite4.1:3b 0/4 in 109 turns. qwen3:4b 0/3 scoreable in 60 turns (one run INVALID, see F-145). gpt-5.6-luna low: 4/4 through GAFITAS and 0/4 bare, W=4 L=0, 23 turns, all four SCORING_CONSISTENT_SUCCESS with conscience PASS and zero writes outside scope.",
+   "impact": "HARNESS_CAPABLE. Four correct, in-scope, double-verified patches were produced through this harness on a bank where a local 3B has produced none in five cohorts. GAFITAS was not what prevented the patches. Granite becomes a CAPACITY_BOUNDARY_CANDIDATE on this bank -- not 'definitive', because attributing its failure to an inability to revise still requires seeing some engine revise, and none has.",
+   "cause": "Engine capability. The harness, the tools, the containment and the scorer were identical; only the brain changed.",
+   "fix": "None. This is the measurement.",
+   "risk": "Luna is NOT local independence and is not counted as such. LOCAL_PAID_PROGRAMMING_CALLS stays 0; ~28 Codex CLI invocations are recorded separately as EXPERIMENTAL_EXTERNAL_CALLS. The CLI reports no token counts, so cost is NOT_AVAILABLE rather than estimated. I15 intact.",
+   "dependencies": "F-141, F-143"
+  },
+  {
+   "id": "F-145",
+   "priority": "P0",
+   "component": "replay_state.WRITES",
+   "status": "FIXED",
+   "evidence": "qwen3:4b's ga03 returned PAIR_SCORING_PENDING with direct=True and replay=False. `replay_state.WRITES` is ('write_file','copy_code','edit','replace_lines') and does NOT include replace_file or replace_symbol_body -- the two primitives added in V1 and V2. The replay route rebuilt a tree without the change and the suite failed there.",
+   "impact": "The qwen3:4b cohort is INVALID for scoring; its trajectories remain sound and are the primary data. Luna's cohort is unaffected: all four runs used only edit and write_file and all four came back CONSISTENT_SUCCESS, so the replay did reproduce them.",
+   "cause": "I added two write primitives and did not update the verification instrument that has to replay them. It was blind to them for two cohorts, and only a different engine reaching for one exposed it -- granite never called either.",
+   "fix": "Add both to replay_state.WRITES, re-run the suite, and re-run qwen3:4b from zero. Not fixed mid-cohort, per the rule.",
+   "risk": "A verification route that silently cannot see a class of change is worse than no second route, because it manufactures disagreement. Any tool added to the write surface must be added here in the same commit.",
+   "dependencies": "F-128, F-139"
+  },
+  {
+   "id": "F-146",
+   "priority": "P1",
+   "component": "my own proxy metrics",
+   "status": "FALSIFIED",
+   "evidence": "I reported 'failing tests seen: 0' for all three engines. `ok` on a run_tests event means the TOOL ran, not that the tests passed: a suite that runs and reports failures returns ok=True. Rebuilt from a determinable fact -- a test call on a run whose final state fails necessarily displayed a failure -- granite saw failing suites in 3 of 4 runs and qwen3:4b in 1 of 4.",
+   "impact": "The false version would have supported 'no engine has ever seen a failing test', which is not true and would have redirected the whole diagnosis.",
+   "cause": "Read the wrong field and published a count before checking an example.",
+   "fix": "Measurement rebuilt on the final-state fact.",
+   "risk": "Fourth proxy in this campaign to measure the wrong thing and produce a number first. The rule keeps catching them and I keep needing it.",
+   "dependencies": "F-124, F-134"
   }
  ],
  "safety_record": {
