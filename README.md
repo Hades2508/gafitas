@@ -32,14 +32,17 @@ Explorer → agent loop → guard → sealed evidence → two independent scorer
 | A capable model **inside** the harness vs **bare** | **4/4 vs 0/4**, then **5/5 vs 0/5** on fresh tasks |
 | A local 4B model on the factory's own task bank | 3 correct patches, causally attributed |
 | A local 3B model, six cohorts | **0 of 24** |
-| A local 4B on **SWE-bench Verified**, official evaluator | **1 of 3**, with 0 empty and 0 errored |
+| A local 4B on **SWE-bench Verified**, official evaluator | **4 of 20** (95% CI 8-42%), seeded sample, six repos |
 
-That last row is a smoke test, not a rate. The three instances are the three
-easiest in a single repository, chosen to prove the pipeline end to end against
-a gold-patch positive control; published SWE-bench figures are over all 500.
-What it does show is that all three predictions were patches the official
-harness could apply and judge, produced against code the agent had never seen
-and with no acceptance test to check itself against.
+Read that last row as its interval, not its point: twenty instances buy
+8-42%, and the four that resolved span three different repositories. The
+sample was drawn by seed across six repos rather than picked, and the run
+sat behind a gold-patch positive control. Underneath the rate is the finding
+that matters: **35% of the time the agent wrote nothing at all**, and when it
+did write something it was right 31% of the time. The bottleneck is not bad
+patches, it is not starting -- a different problem with a different remedy,
+and one an averaged number hides. All of it against code the agent had never
+seen, with no acceptance test to check itself against.
 
 The harness is not the obstacle: plug a stronger brain into the same body and
 the same tools, the same scorer and the same budget produce correct patches
