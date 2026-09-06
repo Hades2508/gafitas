@@ -986,6 +986,56 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
     # (reference engine, 20 of 50 runs); one that only opens the file, 64%, and
     # for granite4.1:3b 7%. The gap is not comprehension, it is which call gets
     # made next, so the result says which call to make next.
+    # F-161. A search that SUCCEEDS inside a narrow scope never said it was
+    # narrow, and the asymmetry ran exactly the wrong way: when a scoped search
+    # finds nothing, the ERROR_NO_MATCH above says so and tells you to drop
+    # path=. When it finds something, nothing is said at all -- while `indexed`
+    # still reports the whole repository. The agent then sees plausible results
+    # sitting next to a count of several thousand regions, and can quite
+    # reasonably read that as having looked everywhere.
+    #
+    # Measured, SWE-bench Verified django__django-11477: the agent called
+    #   search_code(query='translate_url creates an incorrect URL ...',
+    #               path='django/urls/resolvers.py')
+    # read three symbols out of that one file, and finished BLOCKED with "the
+    # function translate_url() is not found in the codebase". It is in
+    # django/urls/base.py at line 160, and has been for years. The agent
+    # narrowed the search itself, was never told what the narrowing cost, and
+    # generalised "not in this file" into "not in this repository".
+    #
+    # This neither widens the search nor overrides the agent's choice of scope.
+    # It reports what was actually looked at, which the instrument knew and did
+    # not say.
+    searched_regions = len(index)
+    if only_file:
+        searched_regions = sum(1 for r in index.regions if r.path == only_file)
+    elif prefix:
+        searched_regions = sum(1 for r in index.regions
+                               if r.path.startswith(prefix))
+    if narrowed:
+        # The FRACTION carries the warning, which is why there is no threshold
+        # here to choose or to tune. Measured on the real django checkout:
+        #     django/urls/resolvers.py      63 of 40001    0.2%
+        #     django/urls/                  99 of 40001    0.2%
+        #     django/                    11496 of 40001   28.7%
+        #     tests/                     27684 of 40001   69.2%
+        # A fixed cut-off would have been wrong in both directions. The first
+        # guess written here was that `django/` covers almost everything -- it
+        # does not, because the test tree is two thirds of the index -- and a
+        # threshold resting on that guess would have shouted at a search
+        # covering a third of the repository while saying the same thing about
+        # one covering a five-hundredth of it. One sentence with the number in
+        # it lets 0.2% read as alarming and 28.7% read as merely informative,
+        # and stays true at every value in between.
+        share = searched_regions / len(index) if len(index) else 0.0
+        scope_note += (
+            f"{NEWLINE}[AMBITO: se ha buscado solo dentro de {narrowed!r} -- "
+            f"{searched_regions} de {len(index)} regiones indexadas "
+            f"({share:.1%}). El resto NO se ha mirado, asi que si de estos "
+            f"resultados concluyes que algo no existe, esa conclusion solo "
+            f"vale para {narrowed!r}: repite sin path= antes de darlo por "
+            f"ausente.]")
+
     top = candidates[0]
     pending = [n for n in ctx.allowed_new_files if not (ctx.root / n).exists()]
     next_call = (f"{NEWLINE}  Para ver uno entero, tal cual esta: "
@@ -997,7 +1047,12 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None, path: Any = Non
     return {
         "query": query,
         "candidates": candidates,
-        "indexed": {"regions": len(index), "files": index.files_indexed},
+        # `indexed` used to report only the repository totals, which is what
+        # made the silence above actively misleading rather than merely
+        # incomplete. It now says how much of that was inside the scope.
+        "indexed": {"regions": len(index), "files": index.files_indexed,
+                    "searched_regions": searched_regions,
+                    "scope": narrowed or "(todo el repositorio)"},
         "note": ("[candidatos ordenados por parecido con tu descripcion, no por "
                  "certeza: el primero no tiene por que ser el bueno. Mira las "
                  "declaraciones y quedate con el que encaje."
