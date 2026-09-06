@@ -1462,6 +1462,54 @@
    "fix": "None yet, deliberately. The rerun existed to measure.",
    "risk": "NO_CHANGE_PRODUCED rose from 2 to 5 between cohorts while the verdicts stayed stable, so the trajectory is far noisier than the outcome. A fix aimed at it must be validated on more than one cohort.",
    "dependencies": "F-129, F-131"
+  },
+  {
+   "id": "F-133",
+   "priority": "P0",
+   "component": "phase5_rerun_precheck / infrastructure gate",
+   "status": "FIXED",
+   "evidence": "p5r4 was launched against a model server that was not running and burned two tasks discovering it. ga02 and ga03 both came back PAIR_INCOMPLETE: the bare arm returned 0 characters and the GAFITAS arm died in one turn with TRANSPORT [WinError 10061] connection refused, after exhausting both infrastructure retries on each arm. Diagnosis: no ollama process, no service, nothing listening on 11434, and the 1943 MiB of VRAM in use belonged to ordinary Windows desktop processes.",
+   "impact": "A whole cohort would have produced nine PAIR_INCOMPLETE pairs. The retry policy equalised across arms in F-127 is what made this safe: it tried, failed and classified the result as INFRASTRUCTURE rather than as the engine failing. Without that separation this would have been recorded as BARE 0/9 and GAFITAS 0/9, which is a number and would have been false.",
+   "cause": "Two things, and the second is mine. The server died together with the foreign CPU load that had been running throughout p5r2 and p5r3 -- the machine going quiet was the same event that took the provider down. I read the quiet as a favourable change of regime, declared it as such, and did not check that the thing the cohort depends on was still up.",
+   "fix": "The precheck now requires a real GENERATION to complete against the exact model, not a reachable port: `/api/tags` answers from a server that cannot load a model, and `capabilities_for` reads a recorded file without touching the wire. Three gates: reachable, engine served, generation completes. Infrastructure was repaired only AFTER the cohort was invalidated, which is the required order.",
+   "risk": "The gate file itself is now exempt from the frozen-hash check, on the grounds that a gate which refuses to let a cohort start cannot bias the cohort's verdicts. That exemption is narrow and its reason is written into the file; widening it would hollow out the freeze.",
+   "dependencies": "F-125, F-127, F-130"
+  },
+  {
+   "id": "F-134",
+   "priority": "P0",
+   "component": "campaign diagnosis / localprog edit surface",
+   "status": "REPRODUCED",
+   "evidence": "Turn-by-turn reconstruction of p5r3's nine GAFITAS runs from sealed evidence. 69 edit attempts, 5 accepted, 64 rejected. TIME_TO_FIRST_EDIT_ATTEMPT is 1,1,1,1,1,2,2,2,3 turns. Zero runs classified EDIT_AVOIDANCE. The five runs recorded as NO_CHANGE_PRODUCED made 8, 10, 10, 17 and 5 attempts and had every one refused. Rejection codes: ERROR_SYNTAX_AFTER_EDIT 35, ERROR_EMPTY_OLD 12, ERROR_MISSING_ARGUMENT 7, ERROR_NO_MATCH 5, ERROR_FILE_EXISTS 3, ERROR_NOT_IN_WRITE_SCOPE 1, ERROR_BAD_ARGUMENTS 1.",
+   "impact": "The campaign's stated bottleneck -- 'investigates for many turns and does not convert what it learns into an edit' -- does not survive its own evidence. The model decides in under three turns every time. The bottleneck is ADMISSION, not decision: 7% of attempted edits get through. An architecture built to push an indecisive model into acting would target a failure mode that occurs in zero of nine runs.",
+   "cause": "NO_CHANGE_PRODUCED was derived from `changed_files == []` and nothing else. An empty diff is equally consistent with never trying and with every attempt being refused, and the class name asserted the first.",
+   "fix": "no_edit_autopsy.py, which reads attempts and rejection codes rather than the diff. The taxonomy in phase5_analyse.py must not be read as evidence about intent.",
+   "risk": "This is the second time in this campaign that a class derived from one field carried an inference the field could not support. The first was F-124's three proxies. A failure class is a proxy too.",
+   "dependencies": "F-129, F-131, F-132"
+  },
+  {
+   "id": "F-135",
+   "priority": "P0",
+   "component": "localprog/loop.py, localprog/tools.py edit surface",
+   "status": "REPRODUCED",
+   "evidence": "31 of 64 rejected edits (48%) are BYTE-IDENTICAL repeats of a payload already refused in the same run. ga03 sent the same refused bytes 14 times; ga10 5; ga02 and ga07 4 each -- ga02's 195-character payload at turns 6, 7, 9 and 19. Separately, 15 rejections (ERROR_EMPTY_OLD 12, ERROR_FILE_EXISTS 3) are one intent the tool surface cannot express: replacing the contents of a file that already exists. Median write payload per run runs 362 to 5930 characters -- whole-file rewrites -- and 30 of the 35 syntax refusals are genuinely invalid code.",
+   "impact": "Two harness-side costs on top of the engine's real ceiling. The loop spends a turn re-refusing bytes it has already refused, and the tool surface forces a large-payload expression of a small intent, which is what makes the genuine syntax failures likely.",
+   "cause": "The loop has no memory of refused payloads, and `write_file` refuses an existing file while `edit` requires an anchor, leaving no primitive between them.",
+   "fix": "Not yet built. Designed against this evidence rather than against the brief's premise, and deliberately not implemented before the classification was finished.",
+   "risk": "A refusal-memory that blocked a legitimate retry would be worse than the cost it removes; it must key on identical bytes, not on similar intent.",
+   "dependencies": "F-134"
+  },
+  {
+   "id": "F-136",
+   "priority": "P1",
+   "component": "localprog/loop.py turn budget",
+   "status": "REPRODUCED",
+   "evidence": "NEW_INFORMATION_EVENT rate by segment across the six runs of 33+ turns: 24 events in turns 1-10, 26 in 11-20, 5 in 21-30, 6 in 31-40. Half the budget yields 18% of the information. Whole cohort 35/30/6/6. Repeated calls run 19 to 24 per long run. Three runs end with a tail of 6, 7 and 15 turns after their last new information.",
+   "impact": "A stagnation control is justified by measurement rather than by intuition -- but as a way to stop paying for turns that buy nothing, NOT as a cure for indecision, which F-134 shows does not occur.",
+   "cause": "Not diagnosed. Measured.",
+   "fix": "None yet.",
+   "risk": "Any threshold must be validated against the runs where new information DOES appear late: 6 events occurred in turns 31-40 and cutting there would have removed them.",
+   "dependencies": "F-134"
   }
  ],
  "safety_record": {
