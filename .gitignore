@@ -5,3 +5,7 @@ __pycache__/
 venv/
 *.sqlite3
 RUNS/
+
+# Coverage data: a binary carrying absolute paths from whoever ran the suite.
+.coverage
+.coverage.*

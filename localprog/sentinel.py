@@ -20,8 +20,8 @@ WHY IT IS NOT A DIRECTORY SWEEP
 The obvious design -- manifest the likely targets before and after -- was built
 first and measured second, which was the wrong order:
 
-    C:\\Users\\joses\\AppData\\Local\\Temp     124 599 entries, 8.3 s to list
-    C:\\Users\\joses                              148 entries, 2 ms
+    <user>\\AppData\\Local\\Temp                124 599 entries, 8.3 s to list
+    <user>                                        148 entries, 2 ms
 
 Eight seconds around every ``run`` would dominate the very timings this campaign
 exists to take, and an earlier version of that idea silently capped its sample
