@@ -178,6 +178,32 @@
    "parameter_size": "4.0B",
    "quantization": "Q4_K_M",
    "schema": "GAFITAS_ENGINE_CAPABILITIES_V1"
+  },
+  "gpt-5.6-luna": {
+   "name": "gpt-5.6-luna",
+   "provider": "codex",
+   "context_window": null,
+   "served_context": 32768,
+   "max_output_tokens": 8192,
+   "supports_native_tools": false,
+   "supports_text_tool_protocol": true,
+   "native_payload_limit": null,
+   "text_payload_limit": null,
+   "tool_role_supported": null,
+   "emits_reasoning_channel": null,
+   "measured_reasoning_tokens": null,
+   "structured_output": null,
+   "streaming": null,
+   "usage_reporting": false,
+   "known_protocol_constraints": [
+    "reached through the Codex CLI with --sandbox read-only and cwd in an empty scratch directory; it never sees the task worktree",
+    "no token counts are reported, so cost per run is NOT_AVAILABLE",
+    "served_context and max_output_tokens are DECLARED at granite4.1:3b's values so the transcript window and per-turn budget are identical across engines. They are not measured limits of this model -- its real window is far larger. The point is to hold the harness's own conditions equal so the comparison isolates the brain, which is the whole experiment."
+   ],
+   "source": "declared",
+   "probed_at": null,
+   "parameter_size": null,
+   "quantization": null
   }
  }
 }

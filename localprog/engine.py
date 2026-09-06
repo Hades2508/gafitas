@@ -153,6 +153,11 @@ class EngineCapabilities:
     #: and every economic claim about the engine is decoration.
     usage_reporting: bool | None = UNKNOWN
     #: Free-text constraints an operator or a probe established the hard way.
+    #: How this engine is REACHED. A declared capability, like every other
+    #: field here, so a runner can pick the right provider without the core
+    #: ever branching on a model's name. "ollama" is the local HTTP tier;
+    #: "codex" is the CLI agent tier, driven through protocol J.
+    provider: str = "ollama"
     known_protocol_constraints: tuple[str, ...] = ()
     #: How this was established, so a declared capability is never mistaken for
     #: an observed one.
