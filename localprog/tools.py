@@ -2879,6 +2879,33 @@ def _offer_a_primitive(ctx: Any, name: str, raw_args: Any, code: str) -> str:
         # Already using the primitive; pointing at it would be noise.
         return ""
 
+    # F-148. Never offer a primitive for a path the mission does not authorise.
+    #
+    # Applicability was asked of the TREE alone -- does the file exist, has it
+    # been read, do its symbols resolve -- and the write scope was never
+    # consulted. Sized against sealed evidence before this treatment had ever
+    # run in a cohort, 12 of the 123 offers it would have made named a
+    # forbidden path, and THREE OF THE FOUR reproduced cases named the
+    # acceptance test: the offer listed `tests/test_scope.py`'s own test
+    # functions back to a model that had just tried to edit them.
+    #
+    # Nothing could have landed -- the scope guard refuses the write, and it is
+    # the guard, not this, that keeps the oracle safe. What the offer would
+    # spend is a turn on a call guaranteed to be refused, and what it would
+    # teach is to go and rewrite the test that judges the run. Silence is
+    # better than either.
+    #
+    # Decided by CALLING the guard rather than by re-deriving what it permits.
+    # A second copy of the scope rule is the F-145 shape again, and a drifting
+    # copy of THIS rule would drift towards being more permissive than the real
+    # boundary.
+    if not rel:
+        return ""
+    try:
+        _check_writable(ctx, rel, creating=False)
+    except ToolError:
+        return ""
+
     lines = []
     can_file, _why = adoption.file_is_replaceable(ctx.root, rel, opened=ctx.opened)
     can_symbol, _why2, symbols = adoption.symbol_is_replaceable(ctx.root, rel)
