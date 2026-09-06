@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from . import deps, retrieval
+from . import rejection
 from .scope import WriteScope
 from . import sentinel as _sentinel
 from .errors import (
@@ -45,6 +46,7 @@ from .errors import (
     ERROR_IS_DIRECTORY,
     ERROR_LANGUAGE_UNSUPPORTED,
     ERROR_MISSING_ARGUMENT,
+    ERROR_REPEATED_REJECTED_EDIT,
     ERROR_MULTIPLE_MATCHES,
     ERROR_NO_MATCH,
     ERROR_NOT_IN_WRITE_SCOPE,
@@ -193,6 +195,11 @@ class ToolContext:
     #: become writable just because it was edited once. Only write_file adds to
     #: it, and only after _check_writable has already allowed the creation.
     created_files: set[str] = field(default_factory=set)
+    #: F-135. What has already been refused, keyed by the attempt AND by the
+    #: state of the file it was aimed at. 31 of 64 refusals in the p5r3 cohort
+    #: were byte-identical repeats against an unchanged file; one run sent the
+    #: same bytes fourteen times, each costing a turn to be told the same thing.
+    rejection_memory: Any = None
     test_timeout: float = TEST_TIMEOUT_SECONDS
     run_timeout: float = RUN_TIMEOUT_SECONDS
     #: Set once a run_tests call reported every declared test green. Read by
@@ -1346,7 +1353,13 @@ def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
     new, new_note = _unescape_if_flattened("new", new)
     escape_note = old_note + new_note
     if not old:
-        raise ToolError(ERROR_EMPTY_OLD, "old no puede estar vacío. Para un fichero nuevo usa write_file.")
+        raise ToolError(
+            ERROR_EMPTY_OLD,
+            "old no puede estar vacio: edit reemplaza un texto EXACTO que ya "
+            "esta en el fichero.\n"
+            f"  Si quieres sustituir el fichero entero: replace_file(path={rel!r}, "
+            f"content=...).\n"
+            "  Si es un fichero nuevo: write_file(path=..., content=...).")
 
     text = _read_text(rel, target)
     count = text.count(old)
@@ -1479,8 +1492,9 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
         # guard exists for, and edit/replace_lines are the right tools there.
         raise ToolError(
             ERROR_FILE_EXISTS,
-            f"{rel!r} ya existe y no lo has creado tu en esta mision. "
-            f"Para cambiarlo usa edit(path={rel!r}, old=..., new=...) o "
+            f"{rel!r} ya existe y no lo has creado tu en esta mision.\n"
+            f"  Para sustituirlo entero: replace_file(path={rel!r}, content=...).\n"
+            f"  Para cambiar una parte: edit(path={rel!r}, old=..., new=...) o "
             f"replace_lines.")
     if rel.endswith(".py"):
         try:
@@ -1498,6 +1512,101 @@ def write_file(ctx: ToolContext, path: Any, content: Any) -> str:
     ctx.changed_files.add(rel)
     ctx.created_files.add(rel)
     return (f"write_file aplicada en {rel}" + escape_note
+            + _unreachable_note(rel, None, content)
+            + _rewrite_note(ctx, rel)
+            + _mission_output_ready(ctx))
+
+
+def replace_file(ctx: ToolContext, path: Any, content: Any,
+                 expected_sha256: Any = None) -> str:
+    """Replace the whole contents of a file that already exists.
+
+    MEASURED
+    --------
+    Phase 5 p5r3: of 64 refused edits, 15 were one intent the tool surface could
+    not express -- "this existing file should now contain X". ``write_file``
+    refuses an existing file it did not create (ERROR_FILE_EXISTS, 3 times) and
+    ``edit`` demands an exact anchor, so a model with nothing to anchor to sends
+    ``edit(old="", new=<the whole file>)`` (ERROR_EMPTY_OLD, 12 times). Nothing
+    sat between them, and the agent was refused for reaching for the obvious
+    expression of what it wanted.
+
+    THE GUARD THIS DOES NOT REMOVE
+    ------------------------------
+    ``write_file``'s refusal exists to stop an accidental whole-file overwrite
+    of real source. That danger is real and this does not wave it away -- it
+    makes the overwrite DELIBERATE and CHECKED rather than impossible:
+
+      * the file must already exist; this never creates one silently,
+      * the path goes through the same containment and write-scope guards,
+      * the agent must have OPENED the file in this run, or pass the digest it
+        expects, so nothing it has never looked at can be overwritten blind,
+      * the result must parse where a parser exists, or nothing is written,
+      * the before/after text is returned as a diff, so the change is auditable.
+
+    ``expected_sha256`` is the optimistic-locking form: pass the digest you read
+    and the write is refused if the file has moved since. Optional, because
+    requiring it would reintroduce the friction this removes.
+    """
+    rel, target = _resolve(ctx, path)
+    _check_writable(ctx, rel, creating=False)
+    if not isinstance(content, str):
+        raise InvalidCall(ERROR_BAD_ARGUMENTS, "content debe ser una cadena")
+    content, escape_note = _unescape_if_flattened("content", content)
+
+    if not target.exists():
+        raise ToolError(
+            ERROR_FILE_NOT_FOUND,
+            f"{rel!r} no existe, y replace_file solo reemplaza ficheros que ya "
+            f"existen. Para crear uno nuevo: write_file(path={rel!r}, "
+            f"content=...).")
+
+    before = _read_text(rel, target)
+    digest = hashlib.sha256(before.encode("utf-8")).hexdigest()
+
+    # Never overwrite what was never inspected. Opening the file in this run
+    # counts, and so does naming the digest you expect; one of the two must
+    # hold, or this is a blind overwrite of code nobody read.
+    if rel not in ctx.opened and rel not in ctx.created_files:
+        if not isinstance(expected_sha256, str) or not expected_sha256:
+            raise ToolError(
+                ERROR_BAD_ARGUMENTS,
+                f"no has leido {rel!r} en esta mision, asi que reemplazarlo "
+                f"entero seria sobrescribir codigo que no has visto.\n"
+                f"  Leelo primero: read_file(path={rel!r})\n"
+                f"  O pasa expected_sha256 si ya sabes que version esperas.")
+    if isinstance(expected_sha256, str) and expected_sha256:
+        if not digest.startswith(expected_sha256.strip().lower()[:len(digest)]):
+            raise ToolError(
+                ERROR_BAD_ARGUMENTS,
+                f"{rel!r} ha cambiado desde que lo leiste: esperabas "
+                f"{expected_sha256[:16]}... y ahora es {digest[:16]}...\n"
+                f"  Vuelve a leerlo antes de reemplazarlo.")
+
+    if content == before:
+        raise ToolError(
+            ERROR_NOTHING_CHANGED,
+            f"el contenido que envias es identico al que ya tiene {rel!r}.")
+
+    if rel.endswith(".py"):
+        try:
+            ast.parse(content)
+        except SyntaxError as exc:
+            raise ToolError(
+                ERROR_SYNTAX_AFTER_EDIT,
+                f"{rel!r} no parsea:\n" + _syntax_report(content, exc, rel)
+                + "\n  NO se ha escrito nada.",
+            ) from None
+        except ValueError as exc:
+            raise ToolError(ERROR_SYNTAX_AFTER_EDIT,
+                            f"{rel!r}: {exc}. NO se ha escrito nada.") from None
+
+    _write_text(target, content)
+    ctx.changed_files.add(rel)
+    ctx.write_counts[rel] = ctx.write_counts.get(rel, 0) + 1
+    ctx.learned_since_write = False
+    was, now = len(before.splitlines()), len(content.splitlines())
+    return (f"replace_file aplicada en {rel}: {was} lineas -> {now}" + escape_note
             + _unreachable_note(rel, None, content)
             + _rewrite_note(ctx, rel)
             + _mission_output_ready(ctx))
@@ -2416,6 +2525,7 @@ SPECS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "replace_lines": (("path", "start", "end", "content"), ()),
     "write_file": (("path", "content"), ()),
     "copy_code": (("src", "into"), ("name", "start", "end")),
+    "replace_file": (("path", "content"), ("expected_sha256",)),
     "run": (("argv",), ("timeout",)),
     "run_tests": ((), ("node_ids",)),
     "finish": ((), ("summary", "status")),
@@ -2442,6 +2552,8 @@ SYNONYMS: dict[str, dict[str, tuple[str, ...]]] = {
     "edit": {"new": ("new_content", "replacement"),
              "old": ("old_content", "original")},
     "write_file": {"content": ("text", "body", "new_content")},
+    "replace_file": {"content": ("text", "body", "new_content", "new"),
+                     "path": ("file", "target")},
     "grep": {"pattern": ("query", "regex")},
     "search_code": {"query": ("pattern", "q")},
     "run": {"argv": ("command", "cmd", "args")},
@@ -2482,6 +2594,7 @@ _IMPL = {
     "replace_lines": replace_lines,
     "write_file": write_file,
     "copy_code": copy_code,
+    "replace_file": replace_file,
     "run": run,
     "run_tests": run_tests,
     "finish": finish,
@@ -2520,6 +2633,19 @@ class ToolOutcome:
     code: str | None = None
     tool_error: bool = False
     invalid_call: bool = False
+
+
+#: The tools that change the tree. Only these are remembered as refusals.
+WRITE_TOOLS = ("edit", "replace_lines", "write_file", "replace_file", "copy_code")
+
+
+def _target_of(args: dict) -> str | None:
+    """The path an edit is aimed at, whatever the tool calls it."""
+    for key in ("path", "into", "src"):
+        value = (args or {}).get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def normalise_arguments(raw: Any) -> dict:
@@ -2562,12 +2688,33 @@ def dispatch(ctx: ToolContext, name: Any, raw_args: Any) -> ToolOutcome:
     did not foresee stops the measurement and names the defect, instead of
     being silently recorded as the model failing.
     """
+    # Bound before anything can raise: an unknown tool or unparseable arguments
+    # fail earlier than the memory is consulted, and the handlers below read
+    # these. Learned by writing it the other way and watching six tests report
+    # UnboundLocalError instead of the invalid call they were checking for.
+    memory = getattr(ctx, "rejection_memory", None)
+    signature = state = None
     try:
         if not isinstance(name, str) or name not in SPECS:
             known = ", ".join(sorted(SPECS))
             raise InvalidCall(ERROR_UNKNOWN_TOOL, f"{name!r} no existe. Herramientas: {known}")
         args = normalise_arguments(raw_args)
         args, renamed = apply_synonyms(name, args)
+
+        # F-135. Consulted BEFORE the operation runs, so a repeat costs nothing
+        # but the parse. Only write tools are remembered: re-reading a file is
+        # cheap and sometimes the right thing, while re-sending a refused patch
+        # against an unchanged file cannot produce a different answer.
+        if memory is not None and name in WRITE_TOOLS:
+            signature = rejection.attempt_signature(name, args)
+            state = rejection.target_state(ctx.root, _target_of(args))
+            found = memory.seen(signature, state)
+            if found is not None:
+                memory.remember(signature, state, code=found.code,
+                                detail=found.detail)
+                raise ToolError(ERROR_REPEATED_REJECTED_EDIT,
+                                rejection.message(found, name, _target_of(args)))
+
         required, optional = SPECS[name]
         missing = [k for k in required if k not in args]
         if missing:
@@ -2598,8 +2745,14 @@ def dispatch(ctx: ToolContext, name: Any, raw_args: Any) -> ToolOutcome:
                                feedback="\n".join(notes))
         return ToolOutcome(name=name, ok=True, value=value)
     except ToolError as exc:
+        if (memory is not None and signature is not None
+                and exc.code != ERROR_REPEATED_REJECTED_EDIT):
+            memory.remember(signature, state, code=exc.code, detail=exc.detail)
         return ToolOutcome(name=str(name), ok=False, feedback=exc.feedback(), code=exc.code, tool_error=True)
     except InvalidCall as exc:
+        if (memory is not None and signature is not None
+                and exc.code != ERROR_REPEATED_REJECTED_EDIT):
+            memory.remember(signature, state, code=exc.code, detail=exc.detail)
         return ToolOutcome(name=str(name), ok=False, feedback=exc.feedback(), code=exc.code, invalid_call=True)
     except HarnessInvalid:
         raise
@@ -2688,8 +2841,15 @@ TOOL_DOC: dict[str, str] = {
     ),
     "write_file": (
         "Crea un fichero NUEVO con el contenido dado. Falla si el fichero ya "
-        "existe y no lo has creado tu en esta mision: para modificar uno que ya "
-        "estaba en el repositorio usa edit o replace_lines."
+        "existe y no lo has creado tu en esta mision: para sustituir uno que ya "
+        "estaba en el repositorio usa replace_file."
+    ),
+    "replace_file": (
+        "Sustituye el contenido COMPLETO de un fichero que YA existe. Falla si "
+        "el fichero no existe (para eso esta write_file) y falla si no lo has "
+        "leido antes en esta mision, para que no sobrescribas codigo que no has "
+        "visto. Valida la sintaxis antes de escribir: si el contenido no parsea, "
+        "no se escribe nada."
     ),
     "copy_code": (
         "Copia codigo de un fichero a otro TAL CUAL, sin que tengas que "
@@ -2743,7 +2903,8 @@ PARAM_DOC: dict[str, str] = {
     "name": "Nombre del simbolo: 'mi_funcion', 'MiClase.mi_metodo' o 'MI_CONSTANTE'.",
     "old": "El texto exacto que hay ahora en el fichero, incluida su indentacion. Debe ser unico.",
     "new": "El texto que lo sustituye. Cadena vacia para borrar el fragmento.",
-    "content": "Contenido nuevo: el fichero entero en write_file, o el texto que sustituye al rango en replace_lines.",
+    "content": "Contenido nuevo: el fichero entero en write_file y replace_file, o el texto que sustituye al rango en replace_lines.",
+    "expected_sha256": "Opcional: el sha256 que esperas que tenga el fichero ahora. Si no coincide, la escritura se rechaza en vez de pisar una version mas nueva.",
 
     "argv": 'Comando como lista de cadenas: ["python", "-m", "pytest", "-x", "tests/test_a.py"].',
     "timeout": "Segundos maximos de ejecucion (1-600). null usa el limite por defecto.",
@@ -2831,6 +2992,7 @@ def native_schema(only: tuple[str, ...] | None = None) -> list[dict]:
         "node_ids": {"type": ["array", "null"], "items": {"type": "string"}},
         "summary": {"type": "string"},
         "status": {"type": "string", "enum": list(FINISH_STATUSES)},
+        "expected_sha256": {"type": ["string", "null"]},
     }
     if only is not None:
         unknown = [n for n in only if n not in SPECS]

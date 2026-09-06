@@ -94,8 +94,16 @@ def test_an_uninstalled_model_is_refused_before_anything_else(tmp_path, capsys):
                      "--out", str(tmp_path / "out")])
     err = capsys.readouterr().err
     assert code != 0
-    assert "PREFLIGHT" in err and "no esta instalado" in err
-    assert "Disponibles" in err, "a refusal that does not say what IS available is a dead end"
+    assert "PREFLIGHT" in err
+    # Two refusals, one property. With a server up the preflight says the model
+    # is not installed and lists what is; with no server it says there is no
+    # server and how to start one. Asserting only the first made this test
+    # depend on a running model server, which it has no business needing --
+    # found when the server went down for an unrelated reason.
+    if "no esta instalado" in err:
+        assert "Disponibles" in err,             "a refusal that does not say what IS available is a dead end"
+    else:
+        assert "no hay servidor" in err and "ollama serve" in err,             "a refusal that does not say how to recover is a dead end too"
 
 
 def _installed_model():

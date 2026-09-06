@@ -223,6 +223,12 @@ ERROR_BAD_ARGUMENTS = "ERROR_BAD_ARGUMENTS"
 ERROR_MISSING_ARGUMENT = "ERROR_MISSING_ARGUMENT"
 ERROR_FORMAT = "ERROR_FORMAT"
 
+#: F-135. The same edit, the same target, the same bytes, against a file that
+#: has not moved. Re-running it would fail identically, so it is refused without
+#: spending the turn. Distinct from every other code here: it says nothing about
+#: the edit's quality, only that the answer is already known.
+ERROR_REPEATED_REJECTED_EDIT = "ERROR_REPEATED_REJECTED_EDIT"
+
 INVALID_CALL_CODES = frozenset({
     ERROR_NO_TOOL_CALL,
     ERROR_UNKNOWN_TOOL,
