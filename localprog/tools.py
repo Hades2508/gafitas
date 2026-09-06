@@ -209,6 +209,13 @@ class ToolContext:
     #: already knows -- the path, the resolvable symbols -- and never the body.
     #: False is the control: the surface as it is today.
     concrete_offers: bool = False
+    #: F-141. Run the declared acceptance tests after an accepted write and put
+    #: the result in the tool's own answer. Off by default so the control arm is
+    #: the surface as it is today.
+    verify_after_write: bool = False
+    #: Turns since the last automatic verification, so a run that writes on
+    #: consecutive turns does not pay for the suite every time.
+    last_auto_verify_turn: int = -99
     test_timeout: float = TEST_TIMEOUT_SECONDS
     run_timeout: float = RUN_TIMEOUT_SECONDS
     #: Set once a run_tests call reported every declared test green. Read by
@@ -2772,6 +2779,66 @@ def _target_of(args: dict) -> str | None:
     return None
 
 
+#: A write is only worth verifying this often. The suite costs real seconds and
+#: two writes in consecutive turns are usually one edit in two halves.
+AUTO_VERIFY_EVERY = 2
+
+
+def _verify_after_write(ctx: Any, name: str) -> str:
+    """Run the declared tests after a write, and say what happened.
+
+    MEASURED
+    --------
+    Across p5r3, smokeV1 and smokeV2: twelve accepted writes, eight runs that
+    produced one, **two** that ran the tests afterwards, and **zero** that
+    edited again after seeing a test fail. There is no EDIT -> TEST -> REVISE
+    cycle anywhere in the record, in any cohort.
+
+    That is the shape a real patch needs. A 3B engine rarely writes a correct
+    patch first time; patches come from iterating against the failure. The
+    harness has `run_tests`, the agent barely calls it, and has never once used
+    the result.
+
+    WHY THE HARNESS SHOULD DO IT
+    ----------------------------
+    After an accepted write the harness knows, deterministically, that there is
+    a change and that acceptance tests are declared. Running them needs no
+    reasoning, and work that needs no reasoning should not cost a turn -- the
+    same rule that put the repository map at turn zero.
+
+    WHAT IT DOES NOT DO
+    -------------------
+    It does not decide anything. It reports pass or fail and the failing tail,
+    and never says what to change. It does not finish the run, it does not mark
+    the ticket green -- the authoritative verdict is still taken by the caller
+    after the loop -- and it does not stop the agent from calling `run_tests`
+    itself.
+    """
+    if not getattr(ctx, "verify_after_write", False):
+        return ""
+    if name not in WRITE_TOOLS or not ctx.acceptance_tests:
+        return ""
+    turn = getattr(ctx, "turn", 0)
+    if turn - getattr(ctx, "last_auto_verify_turn", -99) < AUTO_VERIFY_EVERY:
+        return ""
+    ctx.last_auto_verify_turn = turn
+    try:
+        got = run_tests(ctx, None)
+    except (ToolError, InvalidCall, HarnessInvalid):
+        # Verification is a convenience. A run must never fail because the
+        # harness offered to check something.
+        return ""
+    if got.get("passed"):
+        return ("[verificacion automatica: la suite declarada PASA con este "
+                "cambio. El veredicto final lo toma el evaluador, no esto.]")
+    tail = (got.get("output") or "").strip().splitlines()
+    shown = NEWLINE.join(tail[-12:])
+    failing = got.get("failing") or []
+    head = ("[verificacion automatica: la suite declarada NO pasa todavia"
+            + (f"; fallan {', '.join(failing[:4])}" if failing else "") + "]")
+    return head + (NEWLINE + shown if shown else "")
+
+
 def _offer_a_primitive(ctx: Any, name: str, raw_args: Any, code: str) -> str:
     """Name the primitive this refusal could have been avoided with.
 
@@ -2913,6 +2980,9 @@ def dispatch(ctx: ToolContext, name: Any, raw_args: Any) -> ToolOutcome:
                              opened=ctx.opened, accepted=True)
 
         notes = []
+        auto = _verify_after_write(ctx, name)
+        if auto:
+            notes.append(auto)
         if renamed:
             # Said out loud on purpose. The call worked, and the agent still
             # needs to learn the name, or it will spend the next turn spelling

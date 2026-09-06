@@ -34,8 +34,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import (deps, engine, evidence, loop, orient, protocol as protocol_mod,
-               telemetry_bridge, tools, verify, workspace)
+from . import (adoption, deps, engine, evidence, loop, orient,
+               protocol as protocol_mod, rejection, telemetry_bridge, tools,
+               verify, workspace)
 from .errors import HarnessInvalid
 from .provider import (  # noqa: F401  (WORK_* re-exported for the CLI)
     WORK_NUM_CTX,
@@ -384,6 +385,8 @@ def run_ticket(
     protocol: str | None = None,
     capabilities: Any | None = None,
     preserve_workspace: bool = False,
+    concrete_offers: bool = False,
+    verify_after_write: bool = False,
 ) -> WorkResult:
     """Do the ticket. One model, one workspace, one verdict.
 
@@ -467,6 +470,13 @@ def run_ticket(
         # ---------------- the loop ----------------------------------------
         ctx = tools.ToolContext(
             root=box.path,
+            # F-135, F-140, F-141. Off by default: the control arm is the
+            # surface exactly as it is today, and every one of these records
+            # what it declined to do so the two arms stay comparable.
+            rejection_memory=rejection.RejectionMemory(),
+            adoption_ledger=adoption.AdoptionLedger(),
+            concrete_offers=concrete_offers,
+            verify_after_write=verify_after_write,
             write_scope=ticket.write_scope,
             allowed_new_files=ticket.allowed_new_files,
             acceptance_tests=ticket.acceptance_tests,
