@@ -1558,6 +1558,42 @@
    "fix": "Not built. The next measurable question is adoption, not capability, and it is countable: does a refusal naming the concrete call with the real path and symbol change which tool is reached for?",
    "risk": "A refusal that names a call is a nudge toward a tool, not toward an answer, and must stay on the right side of that line -- the harness knows which primitive fits the intent, and never what the code should say.",
    "dependencies": "F-82, F-139"
+  },
+  {
+   "id": "F-141",
+   "priority": "P0",
+   "component": "localprog/tools.py verify_after_write",
+   "status": "REPRODUCED",
+   "evidence": "Across p5r3, smokeV1 and smokeV2: twelve accepted writes, eight runs that produced one, TWO that ran the tests afterwards, ZERO that edited again after a failed test. With verification wired in (smokeV3verify): run_tests calls 0 -> 22, and revises after a failed test STILL 0. ga04 ran the suite fifteen times against a file it last wrote at turn 2.",
+   "impact": "The diagnosis I built this for was wrong, or incomplete. The model checks; having the failure in front of it does not make it revise. TEST -> REVISE is the missing link and it is harder than the one I went to fix, because it is not about information the harness can supply -- the harness supplied it twenty-two times.",
+   "cause": "Not diagnosed. Measured.",
+   "fix": "verify_after_write ships and stays: safe, one suite per two turns, and it supplies the raw material any revision step would need. RUNTIME_VALIDATED as a mechanism (it fires and delivers), UNVALIDATED as an improvement.",
+   "risk": "A cost I introduced: ga04 spent a third of its budget re-running a suite whose answer could not have changed. Automatic verification gave it a comfortable action to fill turns with. Turn totals still fell 153 -> 109 on this cohort, but the waste mechanism is real.",
+   "dependencies": "F-132, F-138"
+  },
+  {
+   "id": "F-142",
+   "priority": "P0",
+   "component": "V2 hypothesis / replace_symbol_body",
+   "status": "FALSIFIED",
+   "evidence": "replace_symbol_body was built on 'shrink the unit the engine must get right'. Whole-file .py payload parse rate by size across four cohorts: <500 29%, 500-1k 7%, 1k-2k 13%, 2k-4k 35%, >=4k 57%. 29 of 91 parse overall. No size effect, and if anything the opposite. Separately: 6 of the 9 real tasks start with the target file ABSENT, where neither replace_file nor replace_symbol_body can apply at all.",
+   "impact": "The premise of V2 is not supported by evidence I already had. Both new primitives address at most 3 of 9 tasks, and the size rationale is false. I built code on a hypothesis the sealed record would have refused if I had asked it first.",
+   "cause": "I reasoned from the shape of the failure -- big invalid payloads -- to a cause -- payload size -- without checking whether small payloads did any better. They do worse.",
+   "fix": "None to the code: the primitive is safe, tested and costs nothing unused. The claim is withdrawn.",
+   "risk": "Fourth time in this campaign that a plausible mechanism was measured and found not to be the cause. The pattern is mine: I keep reasoning from symptom shape to mechanism before testing the mechanism.",
+   "dependencies": "F-138, F-139"
+  },
+  {
+   "id": "F-143",
+   "priority": "P0",
+   "component": "Phase 5 funnel",
+   "status": "REPRODUCED",
+   "evidence": "smokeV3verify against the frozen four-task control: ACCEPTED 1/4 -> 4/4, EVALUABLE 1/4 -> 4/4, EDIT_ATTEMPT_ACCEPTANCE 1/47 -> 9/25, turns 153 -> 109, SUCCESS 0/4 -> 0/4. First cohort where all four tasks moved together rather than two up and two down.",
+   "impact": "NO_ATTRIBUTION. verify_after_write fires only after an accepted write and cannot cause a first one, and in all four tasks the first accepted write preceded any verification -- ga10 got five accepted writes and never ran the tests at all. The best figures the campaign has produced, and the attribution rule refuses them, as it refused ga03 in V1 and ga06 in p5r2.",
+   "cause": "Unknown. Candidates are the accumulated interface changes across V1 and V2 and ordinary run-to-run variance, and one smoke cannot separate them.",
+   "fix": "None. Recorded as the measurement it is.",
+   "risk": "The funnel is now fully mapped and the remaining stage is the hard one: 4/4 patches exist, are valid, are in scope, and are wrong. Four cohorts have produced exactly one correct patch, ga06 in p5r2, which did not reproduce.",
+   "dependencies": "F-141, F-142"
   }
  ],
  "safety_record": {
