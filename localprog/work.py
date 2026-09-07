@@ -759,7 +759,11 @@ def run_ticket(
         # our own defect produced is pinned and exempt from every budget.
         box.dispose(preserve=preserve, ticket=ticket.ticket_id,
                     outcome=result.outcome,
-                    pinned=result.outcome in (HARNESS_INVALID, PROVIDER_ERROR))
+                    # ACCEPTANCE_UNUSABLE joins these for the same reason
+                    # they are here: it is the harness saying it could not
+                    # judge, which is a defect of ours and not a result.
+                    pinned=result.outcome in (HARNESS_INVALID, PROVIDER_ERROR,
+                                              ACCEPTANCE_UNUSABLE))
         result.workspace = box.describe()
 
 

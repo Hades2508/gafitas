@@ -127,11 +127,31 @@ def verify_ticket(ticket: Path, directory: Path) -> dict:
     every time, and a check that is cheap enough to always run is worth more
     than a thorough one somebody has to remember.
     """
-    report = {"references": 0, "recoverable": 0, "missing": [], "mismatched": []}
+    report = {"references": 0, "recoverable": 0, "missing": [], "mismatched": [],
+              "unreadable": None}
+    # F-179. This used to answer intact=True here, commented "nothing sealed,
+    # nothing to verify". But the caller is `_seal`, running against a file it
+    # has just written: a ticket that cannot be read is not an absence of
+    # evidence, it is evidence that failed to be written, and that is precisely
+    # the alarm this check exists to raise.
+    #
+    # F-114 added this check saying it "turns 'the evidence is sound' from an
+    # assumption into a check". A check that returns true when it cannot read
+    # its subject is still the assumption.
+    #
+    # Absent and corrupt are reported separately because they mean different
+    # things: nothing was written at all, versus something was written and is
+    # not readable.
+    path = Path(ticket)
+    if not path.exists():
+        report["intact"] = False
+        report["unreadable"] = "absent"
+        return report
     try:
-        body = json.loads(Path(ticket).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        report["intact"] = True          # nothing sealed, nothing to verify
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        report["intact"] = False
+        report["unreadable"] = f"{type(exc).__name__}: {exc}"[:200]
         return report
     for event in body.get("events") or []:
         arguments = event.get("args")

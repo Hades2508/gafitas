@@ -239,15 +239,21 @@ def retain(base: Path, *, max_age_days: float | None = None,
     and 61 of them had accumulated here.
     """
     entries = survey(base, prefix)
-    # F-176. The docstring above promises this "refuses to touch anything
-    # marked as belonging to a contaminated or unfinished run". Only `pinned`
-    # was ever checked -- and NOTHING in this codebase passes pinned=True, so
-    # the protection had no way to be requested and the promise was unbacked.
+    # F-176, corrected. The first version of this comment said NOTHING in the
+    # codebase passes pinned=True. That was wrong, and the error was mine:
+    # work.py:762 passes `pinned=result.outcome in (HARNESS_INVALID,
+    # PROVIDER_ERROR)`, which a grep for the literal `pinned=True` does not
+    # find. Two of the four were already protected.
+    #
+    # The real gap is narrower and still real. ACCEPTANCE_UNUSABLE is not in
+    # that caller's list, EXPERIMENT_CONTAMINATED is not produced by it at all,
+    # and both are exactly the harness admitting its own defect. Checking the
+    # outcome here as well means the protection does not depend on one caller
+    # remembering to ask for it -- which is the difference between a policy and
+    # a habit.
     #
     # The outcome was already surveyed and already logged; it simply was not
-    # consulted. These four are the harness admitting its own defect, and a
-    # record of the factory producing invalid results is the last thing an age
-    # limit should be allowed to age out.
+    # consulted.
     protected = [e for e in entries
                  if e["pinned"] or not e["marked"]
                  or str(e.get("outcome", "")).upper() in NEVER_DELETE]

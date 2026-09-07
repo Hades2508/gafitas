@@ -78,11 +78,28 @@ def test_a_ticket_with_no_long_payloads_is_intact_not_suspicious(tmp_path):
 
 def test_an_unreadable_ticket_does_not_crash_the_verifier(tmp_path):
     """A verifier that dies on the first damaged file cannot tell you how much
-    of a cohort is damaged, which is the only interesting question."""
+    of a cohort is damaged, which is the only interesting question.
+
+    F-179: that reason justifies NOT RAISING, and this used to assert
+    intact is True -- conflating "it did not crash" with "the evidence is
+    sound". They are different answers and only the first is argued for above.
+    A ticket that exists and cannot be parsed is damage, and the caller is
+    `_seal` checking a file it has just written.
+    """
     tmp_path.mkdir(parents=True, exist_ok=True)
     broken = tmp_path / "t.json"
     broken.write_text("{not json", encoding="utf-8")
-    assert evidence.verify_ticket(broken, tmp_path)["intact"] is True
+
+    got = evidence.verify_ticket(broken, tmp_path)      # returns, does not raise
+    assert got["intact"] is False
+    assert got["unreadable"], "it must say why, not just that"
+
+
+def test_an_absent_ticket_is_reported_as_absent(tmp_path):
+    """Distinct from corrupt: nothing was written, versus something unreadable."""
+    got = evidence.verify_ticket(tmp_path / "nope.json", tmp_path)
+    assert got["intact"] is False
+    assert got["unreadable"] == "absent"
 
 
 def test_a_cohort_is_verified_as_a_whole(tmp_path):
