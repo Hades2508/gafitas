@@ -137,6 +137,19 @@ class OllamaProvider:
         # repeatable. Pinning to 0, or to anything, is a treatment and would
         # need an experiment of its own.
         self.seed = random.randrange(2 ** 31) if seed is None else int(seed)
+        # F-167. The first version sent THE SAME seed on every request of a
+        # run, and the comment above claimed that left the distribution
+        # untouched. It did not, and the claim was unsupported: before, no seed
+        # was sent at all, so Ollama drew a FRESH one per request. Sending one
+        # fixed value makes every turn sample under identical conditions, which
+        # is a different process, not a recorded version of the old one.
+        #
+        # A generator seeded once from the recorded value gives back what was
+        # there before -- an independent draw per request -- while staying
+        # exactly reproducible from the single number the evidence carries.
+        # Caught by an independent review; the fix is what makes the sentence
+        # in the docstring true rather than merely confident.
+        self._draws = random.Random(self.seed)
         # The budget and the patience are now decided together (F-98). They used
         # to be set in different places, and the gap between them scored 13 runs
         # as zero for an engine that was simply still generating.
@@ -208,7 +221,8 @@ class OllamaProvider:
             "stream": False,
             "options": {"num_ctx": self.num_ctx,
                         "num_predict": self.num_predict,
-                        "seed": self.seed},
+                        # Per request, drawn from the run's recorded seed.
+                        "seed": self._draws.randrange(2 ** 31)},
             "keep_alive": self.keep_alive,
         }
         if tools:

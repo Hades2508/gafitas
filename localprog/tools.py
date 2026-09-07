@@ -952,18 +952,38 @@ def search_code(ctx: ToolContext, query: Any, limit: Any = None,
         raise InvalidCall(ERROR_BAD_ARGUMENTS,
                           "exclude_tests debe ser true o false")
 
-    # Over-fetch when filtering by path, so a subtree still yields `limit` rows.
     narrowed = prefix or only_file
-    over = narrowed or exclude_tests
-    raw = index.search(query, limit=limit if not over else min(limit * 20, 1000))
-    if only_file:
-        raw = [pair for pair in raw if pair[0].path == only_file]
-    elif prefix:
-        raw = [pair for pair in raw if pair[0].path.startswith(prefix)]
-    tests_seen = sum(1 for pair in raw if retrieval.is_test_path(pair[0].path))
-    if exclude_tests:
-        raw = [pair for pair in raw if not retrieval.is_test_path(pair[0].path)]
-    raw = raw[:limit]
+
+    def in_scope(region) -> bool:
+        if only_file:
+            return region.path == only_file
+        if prefix:
+            return region.path.startswith(prefix)
+        return True
+
+    # F-167. This used to over-fetch `limit * 20` and filter the result, which
+    # is exact only while the thing being filtered out is rarer than that
+    # multiple. With limit=1 and twenty leading test files, a source match at
+    # rank 21 was invisible AND the ERROR_NO_MATCH below announced that every
+    # match was a test -- the instrument asserting something false, which is
+    # the one thing it must never do. Reproduced before fixing: 30 test files
+    # outranking one source file, limit=1, exclude_tests=true, and the source
+    # sat at rank 31.
+    #
+    # Filtering inside the index instead is exact and free: the whole ranking
+    # is computed there anyway and only sliced at the end. It also removes the
+    # same starvation for path scoping, which predates this and had the same
+    # shape.
+    raw = index.search(
+        query, limit=limit,
+        keep=lambda region: in_scope(region) and not (
+            exclude_tests and retrieval.is_test_path(region.path)))
+
+    # Only needed to explain an empty list, and only then. Counted over the
+    # whole ranking so the number in the message is the true one.
+    tests_seen = 0
+    if exclude_tests and not raw:
+        tests_seen = len(index.search(query, limit=1000, keep=in_scope))
 
     if not raw and exclude_tests and tests_seen:
         # Not "nothing matched". Everything matched and all of it was tests,

@@ -433,6 +433,16 @@ def run_ticket(
     # drawn per run and recorded, which is the default because a constant would
     # make a whole cohort sample one point of the distribution and hide the
     # run-to-run movement that made this necessary.
+    # F-167. `seed` is honoured only by the DEFAULT factory, so passing it
+    # together with a provider_factory dropped it silently and replayed a
+    # different run than the one asked for. An argument that is quietly
+    # ignored is worse than one that is refused: the caller believes it took
+    # effect and the evidence says so too.
+    if seed is not None and provider_factory is not None:
+        raise HarnessInvalid(
+            "run_ticket recibio seed= y provider_factory= a la vez. La semilla "
+            "solo la aplica el proveedor por defecto; una factoria propia tiene "
+            "que ponerla ella, o el replay usaria otra sin avisar.")
     factory = provider_factory or (
         lambda name: OllamaProvider(name, num_ctx=num_ctx,
                                     num_predict=num_predict, seed=seed)

@@ -373,8 +373,20 @@ class Index:
     def __len__(self) -> int:
         return len(self.regions)
 
-    def search(self, query: str, limit: int = 15) -> list[tuple[Region, float]]:
-        """The best-scoring regions for *query*, best first. Ties break by path."""
+    def search(self, query: str, limit: int = 15,
+               keep=None) -> list[tuple[Region, float]]:
+        """The best-scoring regions for *query*, best first. Ties break by path.
+
+        ``keep`` is a predicate on the Region, applied BEFORE the list is cut
+        to *limit*. F-167: callers used to filter afterwards and compensate by
+        over-fetching a multiple of ``limit``, which is exact only until the
+        thing being filtered out is commoner than the multiple. With
+        ``limit=1`` and twenty leading test files, a source match at rank 21
+        was invisible AND the caller reported that every match was a test --
+        an instrument asserting something false. The whole ranking is computed
+        here regardless and only sliced at the end, so filtering at this point
+        costs nothing and cannot starve.
+        """
         terms = tokenize(query)
         if not terms:
             return []
@@ -391,7 +403,15 @@ class Index:
         ranked = sorted(scores.items(),
                         key=lambda kv: (-kv[1], self.regions[kv[0]].path,
                                         self.regions[kv[0]].start))
-        return [(self.regions[i], score) for i, score in ranked[:limit]]
+        rows = ((self.regions[i], score) for i, score in ranked)
+        if keep is not None:
+            rows = ((region, score) for region, score in rows if keep(region))
+        out = []
+        for row in rows:
+            out.append(row)
+            if len(out) >= limit:
+                break
+        return out
 
     def matched_terms(self, query: str) -> tuple[list[str], list[str]]:
         """Which query words exist anywhere in the index, and which do not.

@@ -77,12 +77,39 @@ def test_the_seed_is_recorded_in_describe():
         "and not recorded reproduces nothing")
 
 
-def test_the_seed_is_actually_sent():
+def test_a_seed_is_actually_sent():
     provider = OllamaProvider("m", seed=4242)
     payload = sent_payload(provider)
-    assert payload["options"]["seed"] == 4242, (
+    assert isinstance(payload["options"]["seed"], int), (
         "recording a seed the engine never received would be worse than not "
         "recording one: the evidence would claim a reproducibility it has not")
+
+
+def test_each_request_gets_its_own_seed():
+    """F-167. The first version sent ONE seed on every request of a run.
+
+    Before any of this, no seed was sent at all, so Ollama drew a fresh one per
+    request. Pinning the same value to every turn is a different process, not a
+    recorded version of the old one -- and the docstring claimed otherwise. A
+    generator seeded from the recorded value restores the independent per-call
+    draw and stays exactly reproducible.
+    """
+    provider = OllamaProvider("m", seed=99)
+    first = sent_payload(provider)["options"]["seed"]
+    second = sent_payload(provider)["options"]["seed"]
+    assert first != second
+
+
+def test_the_sequence_is_reproducible_from_the_recorded_seed():
+    """Which is the whole point: one number in the evidence, same run back."""
+    a = OllamaProvider("m", seed=99)
+    b = OllamaProvider("m", seed=99)
+    mine = [sent_payload(a)["options"]["seed"] for _ in range(4)]
+    theirs = [sent_payload(b)["options"]["seed"] for _ in range(4)]
+    assert mine == theirs
+
+    other = OllamaProvider("m", seed=100)
+    assert [sent_payload(other)["options"]["seed"] for _ in range(4)] != mine
 
 
 def test_an_explicit_seed_is_honoured():
@@ -104,4 +131,4 @@ def test_the_other_options_still_go_through():
     options = sent_payload(provider)["options"]
     assert options["num_ctx"] == 4096
     assert options["num_predict"] == 256
-    assert options["seed"] == 1
+    assert isinstance(options["seed"], int)
