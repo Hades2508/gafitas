@@ -116,6 +116,11 @@ class LoopResult:
     tests_green: bool = False
     finished_without_changes: bool = False
     elisions: int = 0
+    #: F-175. How many calls arrived malformed and were recovered, by tier. An
+    #: engine whose calls need repairing half the time and one whose calls never
+    #: do are not the same engine, and every cohort comparison this project has
+    #: made read them as identical because nothing counted it.
+    repairs: dict = field(default_factory=dict)
     wall_seconds: float = 0.0
     #: Cost, split so LOCAL / LUNA / CLAUDE can be compared (F-08). Filled from
     #: whatever the provider reports; a provider that reports nothing leaves
@@ -559,6 +564,7 @@ def run_loop(
     last_payload: tuple[str, str] | None = None
     repeat_count = 0
     peak_repeat = 0
+    repairs: Counter = Counter()
     last_tool_error: tuple[str, str] | None = None
     error_repeat = 0
     first_seen: dict[str, int] = {}
@@ -604,6 +610,8 @@ def run_loop(
 
             try:
                 call = protocol.parse(protocol_name, message)
+                if call.repaired:
+                    repairs[call.repaired] += 1
             except InvalidCall as exc:
                 result.invalid_calls += 1
                 consecutive_dead += 1
@@ -677,6 +685,16 @@ def run_loop(
                                     tool_name=outcome.name, tool_payload=annotated))
                 events.append({"turn": turn, "tool": outcome.name, "ok": True,
                                "args": _event_args(call.arguments, payloads),
+                               # F-175. protocol.py sets `repaired` to the tier
+                               # that recovered a malformed call, repair.py's
+                               # header says a recovered call is announced, and
+                               # ParsedCall's own comment says a clean call and
+                               # a repaired one "are not the same event". The
+                               # loop read the flag nowhere, so the seal could
+                               # not tell them apart -- and an engine whose
+                               # calls need repairing half the time is not the
+                               # engine the record described.
+                               "repaired": call.repaired,
                                "seen_at": seen_at,
                                "result_chars": len(payload),
                                "repeat_count": repeat_count,
@@ -753,6 +771,7 @@ def run_loop(
             ))
             events.append({"turn": turn, "tool": outcome.name, "ok": False,
                            "args": _event_args(call.arguments, payloads),
+                           "repaired": call.repaired,
                            "code": outcome.code, "invalid_call": outcome.invalid_call,
                            "prompt_tokens": turn_input,
                            "call_usage": _call_usage(raw, getattr(provider, 'num_predict', None)),
@@ -782,6 +801,7 @@ def run_loop(
     result.tools_used = dict(used)
     result.loops = sum(1 for count in signatures.values() if count >= LOOP_THRESHOLD)
     result.max_repeat = peak_repeat
+    result.repairs = dict(repairs)
     result.dead_ends = dead_ends
     result.changed_files = sorted(ctx.changed_files)
     result.tests_green = ctx.tests_green

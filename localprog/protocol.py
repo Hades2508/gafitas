@@ -130,8 +130,39 @@ def parse_text_call(content: str) -> ParsedCall:
             ERROR_FORMAT,
             'usa LLAMADA: herramienta(arg="valor") -- exactamente una por turno.',
         )
-    # The LAST marker: models commonly reason first and act last.
-    head = content.rindex(MARKER) + len(MARKER)
+    # The LAST marker, still: models reason first and act last. But a marker
+    # that appears INSIDE an argument used to win outright, so
+    #
+    #   LLAMADA: write_file(path="n.txt", content="LLAMADA: read_file(path='o')")
+    #
+    # one valid write, executed read_file instead -- a different call, with no
+    # error to tell the agent its write had vanished. It fires whenever written
+    # content mentions the marker at all.
+    #
+    # A marker now qualifies when its call closes at the END of the message.
+    # The inner one above leaves a trailing `")`, so it loses to the outer one.
+    # When none qualifies -- prose after a genuine call -- the last marker is
+    # used exactly as before, so nothing that parses today stops parsing.
+    starts = []
+    at = content.find(MARKER)
+    while at != -1:
+        starts.append(at)
+        at = content.find(MARKER, at + 1)
+
+    def closes_at_end(start: int) -> bool:
+        tail = content[start + len(MARKER):].lstrip()
+        cut = 0
+        while cut < len(tail) and (tail[cut].isalnum() or tail[cut] == "_"):
+            cut += 1
+        while cut < len(tail) and tail[cut].isspace():
+            cut += 1
+        if cut >= len(tail) or tail[cut] != "(":
+            return False
+        end = _scan_balanced(tail, cut)
+        return end != -1 and not tail[end:].strip()
+
+    chosen = next((s for s in reversed(starts) if closes_at_end(s)), starts[-1])
+    head = chosen + len(MARKER)
     rest = content[head:].lstrip()
 
     name_chars = []
@@ -169,7 +200,16 @@ def parse_text_call(content: str) -> ParsedCall:
                     f"argumento {part[:60]!r} no tiene forma clave=valor.",
                 )
             key = pieces[0].strip().strip("\"'")
-            value_text = part[len(pieces[0]) + 1 :].strip()
+            # F-174. `_split_top_level` returns STRIPPED pieces, and this used
+            # to cut at len(pieces[0]) + 1 in the UNSTRIPPED text -- so every
+            # space before the `=` moved the cut left onto the separator, and
+            #     read_file(path = "a.py")
+            # was refused with "no pude leer el valor '= \"a.py\"'". Spaces
+            # around `=` are ordinary; a model writing them lost a turn to this.
+            # Find the separator itself rather than inferring where it must be.
+            separator = part.find("=", len(pieces[0]) - len(pieces[0].lstrip())
+                                  + len(pieces[0].strip()))
+            value_text = part[separator + 1:].strip() if separator != -1 else ""
             arguments[key] = _value(value_text)
     return ParsedCall(name=name, arguments=arguments)
 

@@ -235,6 +235,10 @@ class WorkResult:
     tool_errors: int = 0
     loops: int = 0
     max_repeat: int = 0
+    #: F-175. Malformed calls the harness recovered, by tier. Sealed because a
+    #: repaired call and a clean one are not the same event, and until now the
+    #: record could not tell them apart.
+    repairs: dict = field(default_factory=dict)
     provider_retries: int = 0
     tools_used: dict = field(default_factory=dict)
     changed_files: list[str] = field(default_factory=list)
@@ -279,6 +283,7 @@ class WorkResult:
             "turns_used": self.turns_used, "invalid_calls": self.invalid_calls,
             "tool_errors": self.tool_errors, "loops": self.loops,
             "max_repeat": self.max_repeat,
+            "repairs": dict(self.repairs),
             "provider_retries": self.provider_retries,
             "tools_used": self.tools_used,
             "changed_files": self.changed_files,
@@ -578,6 +583,7 @@ def run_ticket(
         result.tool_errors = outcome.tool_errors
         result.loops = outcome.loops
         result.max_repeat = outcome.max_repeat
+        result.repairs = dict(outcome.repairs)
         result.provider_retries = outcome.provider_retries
         result.tools_used = outcome.tools_used
         result.usage = dict(outcome.usage)
