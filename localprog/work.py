@@ -239,6 +239,12 @@ class WorkResult:
     usage: dict = field(default_factory=dict)
     wall_seconds: float = 0.0
     workspace: dict = field(default_factory=dict)
+    #: Everything the provider was configured with, INCLUDING the seed it drew.
+    #: F-165: without it the sealed evidence described a run it could not get
+    #: back, and five of seven re-run SWE-bench instances changed outcome with
+    #: nothing altered. `describe()` was already being called here and only
+    #: `model_class` was taken off it.
+    provider: dict = field(default_factory=dict)
     patch_path: str | None = None
     provider_error: dict | None = None
     harness_invalid: dict | None = None
@@ -273,6 +279,11 @@ class WorkResult:
             "usage": self.usage,
             "wall_seconds": round(self.wall_seconds, 3),
             "workspace": self.workspace, "patch": self.patch_path,
+            # F-165. The field existed and the assignment happened and the seed
+            # still did not reach the seal, because to_dict names its keys and
+            # this one was not among them. Caught by reading a sealed file from
+            # a real run rather than by trusting that adding a field is enough.
+            "provider": dict(self.provider),
             "provider_error": self.provider_error,
             "harness_invalid": self.harness_invalid,
             "notes": self.notes,
@@ -387,6 +398,7 @@ def run_ticket(
     preserve_workspace: bool = False,
     concrete_offers: bool = False,
     verify_after_write: bool = False,
+    seed: int | None = None,
 ) -> WorkResult:
     """Do the ticket. One model, one workspace, one verdict.
 
@@ -416,8 +428,14 @@ def run_ticket(
 
     result = WorkResult(ticket_id=ticket.ticket_id, model=model, protocol=protocol)
     result.engine = caps.to_dict()
+    # F-165. `seed` makes a sealed run replayable: pass back the value the
+    # evidence recorded and the engine samples the same way. Left as None it is
+    # drawn per run and recorded, which is the default because a constant would
+    # make a whole cohort sample one point of the distribution and hide the
+    # run-to-run movement that made this necessary.
     factory = provider_factory or (
-        lambda name: OllamaProvider(name, num_ctx=num_ctx, num_predict=num_predict)
+        lambda name: OllamaProvider(name, num_ctx=num_ctx,
+                                    num_predict=num_predict, seed=seed)
     )
     telemetry = telemetry or telemetry_bridge.NullTelemetry("no telemetry supplied")
     started = time.perf_counter()
@@ -500,7 +518,9 @@ def run_ticket(
         )
         telemetry.start(ticket.ticket_id, repo=str(ticket.repo), objective=ticket.objective)
         provider = factory(model)
-        result.model_class = str(provider.describe().get("model_class", "LOCAL"))
+        described = provider.describe()
+        result.model_class = str(described.get("model_class", "LOCAL"))
+        result.provider = dict(described)
 
         outcome = loop.run_loop(
             provider=provider, ctx=ctx,

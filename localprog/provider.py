@@ -11,6 +11,7 @@ score.
 from __future__ import annotations
 
 import json
+import random
 import os
 import socket
 import subprocess
@@ -112,11 +113,30 @@ class OllamaProvider:
         num_predict: int = DEFAULT_NUM_PREDICT,
         timeout: float = DEFAULT_TIMEOUT,
         keep_alive: str = DEFAULT_KEEP_ALIVE,
+        seed: int | None = None,
     ) -> None:
         self.model = model
         self.endpoint = endpoint
         self.num_ctx = num_ctx
         self.num_predict = num_predict
+        # F-165. Nothing was ever sent, so Ollama drew its own seed and told
+        # nobody, and NO RUN IN THIS PROJECT COULD BE REPRODUCED. The evidence
+        # sealed every call, every argument and every result, and omitted the
+        # one number needed to get the same run back.
+        #
+        # Measured cost of that: seven SWE-bench instances that had produced an
+        # empty patch were re-run with nothing whatsoever changed, and five of
+        # them produced a patch. A cohort comparison across that much
+        # run-to-run movement is measuring the dice unless the dice are
+        # recorded.
+        #
+        # DRAWN, NOT PINNED. A constant would make every run of a cohort sample
+        # the same way and hide exactly the variance above; drawing one per
+        # provider leaves the distribution of outcomes untouched -- Ollama was
+        # already drawing one -- and only makes each individual draw
+        # repeatable. Pinning to 0, or to anything, is a treatment and would
+        # need an experiment of its own.
+        self.seed = random.randrange(2 ** 31) if seed is None else int(seed)
         # The budget and the patience are now decided together (F-98). They used
         # to be set in different places, and the gap between them scored 13 runs
         # as zero for an engine that was simply still generating.
@@ -134,6 +154,9 @@ class OllamaProvider:
             "num_predict": self.num_predict,
             "timeout": self.timeout,
             "keep_alive": self.keep_alive,
+            # Sealed with the run. Without it the evidence describes what
+            # happened and cannot get it back.
+            "seed": self.seed,
         }
 
     def release(self) -> None:
@@ -183,7 +206,9 @@ class OllamaProvider:
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "options": {"num_ctx": self.num_ctx, "num_predict": self.num_predict},
+            "options": {"num_ctx": self.num_ctx,
+                        "num_predict": self.num_predict,
+                        "seed": self.seed},
             "keep_alive": self.keep_alive,
         }
         if tools:
