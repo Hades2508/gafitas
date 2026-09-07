@@ -32,17 +32,24 @@ Explorer → agent loop → guard → sealed evidence → two independent scorer
 | A capable model **inside** the harness vs **bare** | **4/4 vs 0/4**, then **5/5 vs 0/5** on fresh tasks |
 | A local 4B model on the factory's own task bank | 3 correct patches, causally attributed |
 | A local 3B model, six cohorts | **0 of 24** |
-| A local 4B on **SWE-bench Verified**, official evaluator | **4 of 20** (95% CI 8-42%), seeded sample, six repos |
+| A local 4B on **SWE-bench Verified**, official evaluator | **1 to 4 of 20**, and which ones changes between runs |
 
-Read that last row as its interval, not its point: twenty instances buy
-8-42%, and the four that resolved span three different repositories. The
-sample was drawn by seed across six repos rather than picked, and the run
-sat behind a gold-patch positive control. Underneath the rate is the finding
-that matters: **35% of the time the agent wrote nothing at all**, and when it
-did write something it was right 31% of the time. The bottleneck is not bad
-patches, it is not starting -- a different problem with a different remedy,
-and one an averaged number hides. All of it against code the agent had never
-seen, with no acceptance test to check itself against.
+That row is a range because the same twenty instances were run twice, and
+the second run resolved one where the first resolved four. **Only one of the
+four reproduced.** The other three were coin flips, and the overlapping
+intervals -- 8-42% against 1-24% -- mean twenty instances cannot tell the two
+runs apart at all.
+
+The first number was reported here as though it described a capability. What
+it described was one instance this harness solves reliably and three it lands
+sometimes, and saying so is worth more than the higher figure was.
+
+Underneath it, the finding that survives both runs: **the agent writes nothing
+at all about a third of the time**, and its successes are one-line fixes while
+its failures rewrite blocks. The bottleneck is not bad patches, it is not
+starting -- a different problem with a different remedy, and one an averaged
+number hides. All of it against code the agent had never seen, with no
+acceptance test to check itself against.
 
 The harness is not the obstacle: plug a stronger brain into the same body and
 the same tools, the same scorer and the same budget produce correct patches
