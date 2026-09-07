@@ -63,6 +63,13 @@ STATUS_FILE = "RUN_STATUS.json"
 MARKER_FILE = ".gafitas_preserved.json"
 DELETION_LOG = "RETENTION_LOG.jsonl"
 
+#: Outcomes whose workspace is never aged out. These are the harness reporting
+#: its OWN defect, and a record of the factory producing invalid results is
+#: exactly what a size limit must not be free to reclaim. Compared uppercased,
+#: so a marker written by an older version still matches.
+NEVER_DELETE = frozenset({"HARNESS_INVALID", "ACCEPTANCE_UNUSABLE",
+                          "PROVIDER_ERROR", "EXPERIMENT_CONTAMINATED"})
+
 
 @dataclass
 class JobState:
@@ -232,8 +239,21 @@ def retain(base: Path, *, max_age_days: float | None = None,
     and 61 of them had accumulated here.
     """
     entries = survey(base, prefix)
-    protected = [e for e in entries if e["pinned"] or not e["marked"]]
-    candidates = [e for e in entries if not e["pinned"] and e["marked"]]
+    # F-176. The docstring above promises this "refuses to touch anything
+    # marked as belonging to a contaminated or unfinished run". Only `pinned`
+    # was ever checked -- and NOTHING in this codebase passes pinned=True, so
+    # the protection had no way to be requested and the promise was unbacked.
+    #
+    # The outcome was already surveyed and already logged; it simply was not
+    # consulted. These four are the harness admitting its own defect, and a
+    # record of the factory producing invalid results is the last thing an age
+    # limit should be allowed to age out.
+    protected = [e for e in entries
+                 if e["pinned"] or not e["marked"]
+                 or str(e.get("outcome", "")).upper() in NEVER_DELETE]
+    candidates = [e for e in entries
+                  if not e["pinned"] and e["marked"]
+                  and str(e.get("outcome", "")).upper() not in NEVER_DELETE]
     candidates.sort(key=lambda e: -e["age_days"])   # oldest first
 
     doomed: list[dict] = []
@@ -243,7 +263,18 @@ def retain(base: Path, *, max_age_days: float | None = None,
                 doomed.append({**entry, "reason": f"older than {max_age_days}d"})
 
     if max_total_bytes is not None:
-        remaining = [e for e in candidates if e not in doomed]
+        # F-176. This compared a candidate dict against doomed dicts that carry
+        # an extra "reason" key, so it was never equal and `remaining` held
+        # everything -- including what the age pass had already condemned.
+        # Reproduced: two directories of 1088 bytes each appeared TWICE in the
+        # selection, once per reason, and selected_bytes reported 4352 for a
+        # corpus of 4352 of which only 2176 was going anywhere. The deletion
+        # log recorded each path twice, the figure a human reads to decide
+        # whether to run this was double, and the second rmtree on an
+        # already-removed path landed in `failed`, so a clean run reported
+        # failures it had not had.
+        condemned = {e["path"] for e in doomed}
+        remaining = [e for e in candidates if e["path"] not in condemned]
         total = sum(e["bytes"] for e in remaining)
         for entry in remaining:
             if total <= max_total_bytes:
