@@ -305,6 +305,13 @@ class Symbol:
     #: tell "gained an optional argument", which breaks nothing, from "gained a
     #: required one", which breaks every existing caller (F-36).
     defaults: int = 0
+    #: Whether the symbol carries a docstring. F-171: three of thirteen
+    #: SWE-bench patches deleted more documentation than they added, and one of
+    #: them deleted a docstring and changed NOTHING else. No signal looked at
+    #: it, so a patch could strip the explanation off an algorithm and still be
+    #: reported as preserving the public surface -- the name and the parameters
+    #: were all that surface meant.
+    documented: bool = False
 
 
 def public_surface(source: str) -> dict[str, Symbol]:
@@ -340,22 +347,30 @@ def public_surface(source: str) -> dict[str, Symbol]:
             optional += 1
         return tuple(names), optional
 
+    def documented(node) -> bool:
+        try:
+            return ast.get_docstring(node) is not None
+        except TypeError:
+            return False
+
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not node.name.startswith("_"):
                 names, optional = params_of(node)
-                out[node.name] = Symbol(node.name, "function", names, optional)
+                out[node.name] = Symbol(node.name, "function", names, optional,
+                                        documented(node))
         elif isinstance(node, ast.ClassDef):
             if node.name.startswith("_"):
                 continue
-            out[node.name] = Symbol(node.name, "class", ())
+            out[node.name] = Symbol(node.name, "class", (), 0, documented(node))
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     if child.name.startswith("_") and child.name != "__init__":
                         continue
                     dotted = f"{node.name}.{child.name}"
                     names, optional = params_of(child)
-                    out[dotted] = Symbol(dotted, "function", names, optional)
+                    out[dotted] = Symbol(dotted, "function", names, optional,
+                                         documented(child))
     return out
 
 
@@ -465,7 +480,12 @@ def _compatible_signature(before: Symbol, after: Symbol) -> bool:
         return False
     added = len(new) - len(old)
     if added == 0:
-        return True
+        # F-171b. `def f(x=1)` -> `def f(x)` keeps every parameter name, so the
+        # prefix test above passes and this returned True -- while every
+        # existing `f()` call site now raises TypeError. Losing a default is
+        # exactly the kind of break this signal exists to catch and it was the
+        # one shape it could not see.
+        return after.defaults >= before.defaults
     # Every added parameter must be covered by the new signature's optional
     # tail. Comparing counts is enough: defaults are always trailing.
     return after.defaults >= added
@@ -517,6 +537,62 @@ def signal_public_surface(
         f"ninguna funcion o clase publica desaparecio ni cambio de firma"
         + (f"; {len(added)} anadidas" if added else "") + ".",
         data | {"classification": EXPECTED_CHANGE if added else PRESERVED_BEHAVIOR},
+    )
+
+
+def signal_documentation_preserved(
+    before: dict[str, dict[str, Symbol]],
+    after: dict[str, dict[str, Symbol]],
+) -> Signal:
+    """A symbol that survived the change did not lose its explanation.
+
+    Measured on the twenty SWE-bench Verified patches this harness produced:
+    three of the thirteen non-empty ones deleted more documentation than they
+    added, and one of them -- django__django-10999 -- deleted a docstring and
+    changed NOTHING ELSE. Its whole diff was seven removed lines of prose about
+    `parse_duration`. Another stripped the explanation off sympy's Bareiss
+    determinant algorithm, TODO and paper reference included, on its way past.
+
+    None of the existing signals could see it. `signal_public_surface` compares
+    names and parameters, so a function that keeps both and loses its docstring
+    is "unchanged"; the acceptance suite does not read prose. A patch could
+    therefore strip a repository of its explanations and be reported as
+    preserving everything that mattered.
+
+    Only symbols present in BOTH snapshots are compared. Deleting a function
+    deletes its docstring and that is not this signal's business -- removals
+    are `signal_public_surface`'s, and double-reporting one act as two
+    findings would inflate exactly the kind of count this project keeps trying
+    to keep honest.
+    """
+    lost: list[str] = []
+    gained = 0
+    for rel, old in before.items():
+        new = after.get(rel, {})
+        for name, symbol in old.items():
+            other = new.get(name)
+            if other is None:
+                continue                      # removed: not this signal's job
+            if symbol.documented and not other.documented:
+                lost.append(f"{rel}::{name}")
+            elif other.documented and not symbol.documented:
+                gained += 1
+    data = {"lost_docstrings": sorted(lost), "gained_docstrings": gained,
+            "classification": UNEXPLAINED_CHANGE if lost else PRESERVED_BEHAVIOR}
+    if lost:
+        return Signal(
+            "documentation_preserved", REGRESSION,
+            f"{len(lost)} simbolos que seguian existiendo han perdido su "
+            f"docstring: {', '.join(sorted(lost)[:6])}"
+            + (" ..." if len(lost) > 6 else "")
+            + ". Borrar la explicacion no forma parte de arreglar un fallo.",
+            data,
+        )
+    return Signal(
+        "documentation_preserved", PASS,
+        f"ningun simbolo superviviente perdio su docstring"
+        + (f" y {gained} lo ganaron." if gained else "."),
+        data,
     )
 
 

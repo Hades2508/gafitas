@@ -652,6 +652,15 @@ def run_ticket(
             verify.signal_acceptance_untouched(ticket.acceptance_tests, changed),
             verify.signal_scope_respected(changed, ticket.scope),
             verify.signal_public_surface(pre_surface, post_surface),
+            # F-171. Measured on the twenty SWE-bench patches this harness
+            # produced: three of the thirteen non-empty ones deleted more
+            # documentation than they added, and django__django-10999 deleted
+            # a docstring and changed NOTHING else -- its entire diff was seven
+            # removed lines of prose. No signal could see it: public_surface
+            # compares names and parameters, so a function that keeps both and
+            # loses its explanation is "unchanged", and the acceptance suite
+            # does not read prose.
+            verify.signal_documentation_preserved(pre_surface, post_surface),
         ]
         if judged_here:
             # Without a declared acceptance there is nothing to discriminate,
