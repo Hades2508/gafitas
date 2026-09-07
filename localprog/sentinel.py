@@ -102,6 +102,34 @@ def _git_dirty(repo: Path) -> list[str] | None:
     return [line[3:].strip() for line in done.stdout.splitlines() if line.strip()]
 
 
+def _worktrees(repo: Path) -> list[str] | None:
+    """The worktrees registered in *repo*, or None if it could not be asked.
+
+    F-170. `git status --porcelain` is exact about TRACKED CONTENT and blind to
+    repository metadata, so the source-repo check reported "clean" while every
+    preserved run left a permanent entry in `<repo>/.git/worktrees/`. Measured
+    on this machine: 65 registrations across seven source repositories, django
+    holding 19, none of them stale -- they are live preserved workspaces, which
+    is the intended policy.
+
+    So this is not a leak and nothing here is garbage. It is a claim that was
+    wider than its check: "the source repository is not modified" was verified
+    by an instrument structurally unable to see one of the ways it is. Watching
+    them costs one git call and makes the report true.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT, shell=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return sorted(line[len("worktree "):].strip()
+                  for line in done.stdout.splitlines()
+                  if line.startswith("worktree "))
+
+
 def named_destinations(argv, workspace: Path) -> list[Path]:
     """The exact paths the command names that lie outside the workspace.
 
@@ -154,6 +182,7 @@ class Sentinel:
     _dirs: list = field(default_factory=list, repr=False)
     _before: dict = field(default_factory=dict, repr=False)
     _source_before: list | None = field(default=None, repr=False)
+    _worktrees_before: list | None = field(default=None, repr=False)
     _too_big: list = field(default_factory=list, repr=False)
     _names: list = field(default_factory=list, repr=False)
     _name_before: dict = field(default_factory=dict, repr=False)
@@ -186,6 +215,8 @@ class Sentinel:
         self._name_before = {str(p): _stamp(p) for p in self._names}
         self._source_before = (_git_dirty(self.source_repo)
                                if self.source_repo else None)
+        self._worktrees_before = (_worktrees(self.source_repo)
+                                  if self.source_repo else None)
 
     def check(self) -> dict:
         changes: list[dict] = []
@@ -219,10 +250,14 @@ class Sentinel:
                                     "kind": "deleted"})
 
         source_changes: list[str] = []
+        registered: list[str] = []
         if self.source_repo is not None:
             after = _git_dirty(self.source_repo)
             if after is not None and self._source_before is not None:
                 source_changes = sorted(set(after) - set(self._source_before))
+            after_trees = _worktrees(self.source_repo)
+            if after_trees is not None and self._worktrees_before is not None:
+                registered = sorted(set(after_trees) - set(self._worktrees_before))
 
         return {
             "watched": [str(d) for d in self._dirs],
@@ -230,6 +265,11 @@ class Sentinel:
             "source_repo": str(self.source_repo) if self.source_repo else None,
             "outside_writes": changes,
             "source_repo_writes": source_changes,
+            # Metadata the run added to the source repository. Not an
+            # unauthorised write and not counted as one -- a preserved
+            # workspace is registered there on purpose -- but it IS the source
+            # repository being written to, and the report used to say clean.
+            "source_repo_worktrees_added": registered,
             "too_big_to_watch": self._too_big,
             # Present on every report, clean or not. The number this yields must
             # never be mistaken for a statement about the whole filesystem.
@@ -237,7 +277,9 @@ class Sentinel:
                             "the home directory and the source repository; and "
                             "anything more than one level inside a watched "
                             "directory. The source repository is checked at any "
-                            "depth via git."),
+                            "depth via git for tracked content, and separately "
+                            "for worktree registrations; other metadata under "
+                            "its .git is not watched."),
         }
 
 
