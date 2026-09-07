@@ -66,7 +66,8 @@ ESCALATABLE = frozenset({work.FAIL, work.BLOCKED_BY_CONSCIENCE})
 SUCCESSFUL = frozenset({work.PASS, work.PASS_UNCONFIRMED, work.CANDIDATE})
 
 #: Nobody's model can fix these, so spending on a better one is waste.
-TERMINAL = frozenset({work.NON_DISCRIMINATING, work.PROVIDER_ERROR, work.HARNESS_INVALID})
+TERMINAL = frozenset({work.NON_DISCRIMINATING, work.PROVIDER_ERROR,
+                      work.HARNESS_INVALID, work.ACCEPTANCE_UNUSABLE})
 
 #: The ticket was not a task. No tier, free or paid, changes that -- asking
 #: again is asking the same question.
@@ -77,7 +78,13 @@ ABANDON = frozenset({work.NON_DISCRIMINATING})
 #: transient 500 on the third local attempt once ended a whole run, and the
 #: free strong tier below it was never reached. "Do not pay for infrastructure
 #: failure" is right; "give up entirely" was not what that meant.
-INFRASTRUCTURE = frozenset({work.PROVIDER_ERROR, work.HARNESS_INVALID})
+INFRASTRUCTURE = frozenset({work.PROVIDER_ERROR, work.HARNESS_INVALID,
+                            # F-168. The acceptance suite could not be run. A
+                            # better model cannot start a pytest that will not
+                            # start, so this must never buy a paid tier -- but
+                            # it is exactly the sort of thing that is transient,
+                            # so a free retry is right.
+                            work.ACCEPTANCE_UNUSABLE})
 
 
 @dataclass
@@ -161,6 +168,10 @@ def explain(outcome: str) -> str:
         return "fallo la infraestructura, no el modelo; arreglar la maquina, no pagar mas."
     if outcome == work.HARNESS_INVALID:
         return "defecto de este arnes; escalarlo lo esconderia."
+    if outcome == work.ACCEPTANCE_UNUSABLE:
+        return ("la aceptacion no se pudo ejecutar: no sabemos si el trabajo "
+                "estaba bien, asi que no es un fallo del modelo y pagar otro "
+                "no responderia la pregunta.")
     return f"resultado no clasificado: {outcome}"
 
 

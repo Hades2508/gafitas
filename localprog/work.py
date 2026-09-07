@@ -61,6 +61,16 @@ PASS_UNCONFIRMED = "PASS_UNCONFIRMED"
 BLOCKED_BY_CONSCIENCE = "BLOCKED_BY_CONSCIENCE"   # suite green, a signal refused it
 FAIL = "FAIL"                              # honest miss: PRE failed, POST still fails
 NON_DISCRIMINATING = "NON_DISCRIMINATING"  # the ticket was not a task
+#: The acceptance suite could not be EXECUTED -- pytest never started, or timed
+#: out, or collected nothing. F-168: this used to land in FAIL when it happened
+#: after the loop, and in NON_DISCRIMINATING when it happened before, under a
+#: note that said "the acceptance already passed" -- which is false when the
+#: acceptance never ran. `verify.SuiteResult.usable` gets this exactly right and
+#: says why in its own docstring: none of those exit codes mean the code is
+#: wrong, and treating them as failures is how an infrastructure problem gets
+#: recorded as a model one. The layer that knew the distinction was careful; the
+#: layer that assigned the verdict threw it away. Never scoreable.
+ACCEPTANCE_UNUSABLE = "ACCEPTANCE_UNUSABLE"
 #: The ticket declared no acceptance tests, so nothing here can say whether
 #: the work is right -- something outside decides (a benchmark harness, a
 #: reviewer, CI). A real change was produced and was not shown to be
@@ -483,11 +493,19 @@ def run_ticket(
 
         # ---------------- the gate. Before spending a single token. -------
         if judged_here and not pre_disc.measurable:
-            result.outcome = NON_DISCRIMINATING
+            unusable = pre_disc.status == verify.UNKNOWN
+            result.outcome = (ACCEPTANCE_UNUSABLE if unusable
+                              else NON_DISCRIMINATING)
             result.loop_outcome = "(not run)"
             result.scoreable = False
             result.discrimination = pre_disc.to_dict()
             result.notes.append(
+                # F-168. Both were reported as "the acceptance already passed",
+                # and that sentence is false when the suite never ran at all.
+                "el modelo NO fue invocado: la aceptacion PRE no se pudo "
+                "EJECUTAR, asi que no hay medida y esto no dice nada sobre el "
+                "modelo. Es un fallo de infraestructura, no un resultado."
+                if unusable else
                 "el modelo NO fue invocado: la aceptacion ya pasaba antes de empezar, "
                 "asi que este ticket no puede medir nada."
             )
@@ -669,6 +687,20 @@ def run_ticket(
                 "sin tests de aceptacion declarados y sin ningun cambio: no hay "
                 "candidato que entregar."
             )
+        elif post_disc.status == verify.UNKNOWN:
+            # F-168. The acceptance could not be EXECUTED after the loop, so
+            # nothing here can say whether the work was right. This used to be
+            # FAIL and scoreable, which put it in the same bucket as an honest
+            # miss -- a model that wrote the wrong patch and a pytest that never
+            # started counted identically, and every rate computed downstream
+            # carried the mixture. tester.md states the rule this broke:
+            # INFRA_ERROR is not FAIL, and conflating them corrupts every metric.
+            result.outcome = ACCEPTANCE_UNUSABLE
+            result.scoreable = False
+            result.notes.append(
+                "la aceptacion POST no se pudo ejecutar, asi que este run no "
+                "es puntuable: no dice si el trabajo era correcto. El "
+                "workspace se conserva como evidencia.")
         elif post_disc.status != verify.DISCRIMINATED:
             result.outcome = FAIL
         elif conscience.verdict != verify.PASS:

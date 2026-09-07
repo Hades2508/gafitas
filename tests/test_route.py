@@ -90,6 +90,10 @@ def test_every_work_outcome_is_classified():
         work.PASS, work.PASS_UNCONFIRMED, work.CANDIDATE, work.FAIL,
         work.BLOCKED_BY_CONSCIENCE, work.NON_DISCRIMINATING,
         work.PROVIDER_ERROR, work.HARNESS_INVALID,
+        # F-168. The acceptance suite could not be executed, so nothing was
+        # measured. Terminal and infrastructure, never escalatable: a better
+        # model cannot start a pytest that will not start.
+        work.ACCEPTANCE_UNUSABLE,
     }
     covered = route.SUCCESSFUL | route.ESCALATABLE | route.TERMINAL
     assert every == covered, f"unclassified: {every ^ covered}"

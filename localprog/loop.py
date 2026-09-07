@@ -558,6 +558,7 @@ def run_loop(
     consecutive_dead = 0
     last_payload: tuple[str, str] | None = None
     repeat_count = 0
+    peak_repeat = 0
     last_tool_error: tuple[str, str] | None = None
     error_repeat = 0
     first_seen: dict[str, int] = {}
@@ -652,6 +653,13 @@ def run_loop(
                 key = (outcome.name, payload)
                 repeat_count = repeat_count + 1 if key == last_payload else 1
                 last_payload = key
+                # F-168b. `result.max_repeat` used to be assigned this variable
+                # at loop exit, so it recorded the LAST streak and not the
+                # largest one: five identical results early, followed by one
+                # different result, sealed max_repeat=1. A field named for a
+                # maximum that is not the maximum is a metric that lies, and it
+                # is read when deciding whether a run was going in circles.
+                peak_repeat = max(peak_repeat, repeat_count)
                 if _found_nothing(outcome.name, outcome.value):
                     label = _search_label(outcome.name, call.arguments)
                     if label not in dead_ends:
@@ -757,7 +765,7 @@ def run_loop(
     result.wall_seconds = time.perf_counter() - started
     result.tools_used = dict(used)
     result.loops = sum(1 for count in signatures.values() if count >= LOOP_THRESHOLD)
-    result.max_repeat = repeat_count
+    result.max_repeat = peak_repeat
     result.dead_ends = dead_ends
     result.changed_files = sorted(ctx.changed_files)
     result.tests_green = ctx.tests_green
