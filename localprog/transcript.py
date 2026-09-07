@@ -134,11 +134,11 @@ class Transcript:
                 else:
                     payload_message = {"role": "tool", "name": turn.tool_name,
                                        "content": payload}
-            rendered.append((turn.number, assistant, payload_message))
+            rendered.append((turn.number, assistant, payload_message, turn))
 
         def assemble() -> list[dict]:
             messages = list(out)
-            for _, assistant, payload_message in rendered:
+            for _, assistant, payload_message, _turn in rendered:
                 messages.append(assistant)
                 if payload_message is not None:
                     messages.append(payload_message)
@@ -147,16 +147,41 @@ class Transcript:
         if self.budget_chars:
             index = 0
             while self._size(assemble()) > self.budget_chars and index < len(rendered) - self.keep_turns:
-                number, assistant, payload_message = rendered[index]
+                number, assistant, payload_message, turn = rendered[index]
+                # F-172. Two defects met here, and only together.
+                #
+                # The name was read off the MESSAGE, and a message only carries
+                # one under role="tool". On the text protocol -- where a result
+                # arrives as role="user" with the name inside the text -- this
+                # raised KeyError: 'name', and the loop catches only
+                # HarnessInvalid, so the run died. It bit exactly the engines
+                # that need this most: the ones driven by text have the smaller
+                # windows and therefore meet budget pressure soonest.
+                #
+                # It stayed hidden because pass one already shortens old
+                # payloads, so almost nothing long survives to reach here --
+                # except an ERROR, which pass one deliberately skips. The
+                # module's own header promises errors are "never elided", and
+                # pass two elided them anyway, which is both the second defect
+                # and the only route to the first.
+                #
+                # Reproduced before fixing: keep_turns=2, budget 1200, six
+                # error turns of 3000 chars. role="tool" renders; role="user"
+                # raises KeyError.
+                elide_payload = (
+                    payload_message is not None
+                    and not turn.is_error
+                    and len(payload_message["content"]) > ARGUMENT_ELIDE_OVER_CHARS
+                )
                 rendered[index] = (
                     number,
                     _elide_assistant(assistant, ARGUMENT_ELIDE_OVER_CHARS),
                     (
-                        {**payload_message, "content": self._placeholder_text(payload_message["name"])}
-                        if payload_message is not None
-                        and len(payload_message["content"]) > ARGUMENT_ELIDE_OVER_CHARS
-                        else payload_message
+                        {**payload_message,
+                         "content": self._placeholder_text(turn.tool_name or "")}
+                        if elide_payload else payload_message
                     ),
+                    turn,
                 )
                 self.elisions += 1
                 index += 1
