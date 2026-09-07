@@ -175,6 +175,11 @@ class ToolContext:
     write_scope: tuple[str, ...] = ()
     allowed_new_files: tuple[str, ...] = ()
     acceptance_tests: tuple[str, ...] = ()
+    #: The mission text itself. F-173: needed so a refusal can name an
+    #: identifier the OBJECTIVE mentions and the agent never opened -- which is
+    #: the one fact that speaks to "the issue is not present in this code", the
+    #: sentence six of eight empty SWE-bench runs ended on.
+    objective: str = ""
     changed_files: set[str] = field(default_factory=set)
     #: (path, symbol) of the harness's own top-ranked candidate for this
     #: mission, computed deterministically at turn zero from the same index the
@@ -2516,6 +2521,69 @@ def run_tests(ctx: ToolContext, node_ids: Any = None) -> dict:
     return result
 
 
+#: A token worth checking: something that looks like a code identifier rather
+#: than an English word. Either it carries an underscore or a camelCase hump,
+#: or the objective wrote it with parentheses after it.
+_IDENTIFIER = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\("      # written with parentheses after it
+    r"|\b([a-z]+_[a-z0-9_]+)\b"              # snake_case
+    r"|\b([a-z]+[A-Z][A-Za-z0-9]*)\b"        # camelCase
+)
+
+
+def _named_but_never_opened(ctx: ToolContext, limit: int = 3) -> list[tuple[str, str]]:
+    """(symbol, path) the OBJECTIVE names, that exist here, and were never read.
+
+    F-173. Six of eight empty SWE-bench runs ended on a variant of "the issue
+    described is not actually present in this code". They were not lazy -- 7 to
+    13 turns, up to 7 reads and 5 searches each. They looked, did not find it,
+    and concluded it was not there.
+
+    The harness is in a position to answer that specific sentence with a
+    specific fact. django__django-11477 finished saying `translate_url()` "is
+    not found in the codebase"; it is in django/urls/base.py, the index knew
+    that, and the agent had never opened the file.
+
+    Deliberately narrow. Only tokens shaped like identifiers, only ones with an
+    exact declaration in the index, only files the agent never opened, and at
+    most three -- a list of forty plausible names is not a fact, it is noise
+    wearing one.
+    """
+    if not ctx.objective:
+        return []
+    wanted: list[str] = []
+    for match in _IDENTIFIER.finditer(ctx.objective):
+        name = next(g for g in match.groups() if g)
+        if len(name) > 3 and name not in wanted:
+            wanted.append(name)
+    if not wanted:
+        return []
+    try:
+        index = ctx.index()
+    except Exception:
+        return []
+    # Only where code lives. The first version matched "arguments" out of the
+    # prose -- an ordinary English word that happens to head a region in
+    # docs/releases/2.1.txt -- and offered it beside `translate_url` as though
+    # the two were the same kind of fact. One false row devalues the true one
+    # next to it, which is the whole reason this note is worth having.
+    prose = (".txt", ".rst", ".md")
+    by_name: dict[str, str] = {}
+    for region in index.regions:
+        if region.path.endswith(prose):
+            continue
+        if region.name and region.name not in by_name:
+            by_name[region.name] = region.path
+    out: list[tuple[str, str]] = []
+    for name in wanted:
+        path = by_name.get(name)
+        if path and path not in ctx.opened:
+            out.append((name, path))
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _navigation_note(ctx: ToolContext) -> str:
     """What the agent's own session says about where it has and has not looked.
 
@@ -2716,10 +2784,24 @@ def finish(ctx: ToolContext, summary: Any = None, status: Any = "DONE") -> str:
         elif ctx.write_scope:
             expected = ("\n  Esta mision te autorizaba a escribir en: "
                         + ", ".join(ctx.write_scope[:6]) + ".")
+        # F-173. For an EDIT mission the message above says only what the agent
+        # was ALLOWED to write, which is a permission it already knew and does
+        # not speak to the belief it is about to seal. This does: an identifier
+        # the objective itself names, that exists in this repository, in a file
+        # the agent never opened.
+        unopened = _named_but_never_opened(ctx)
+        named = ""
+        if unopened:
+            rows = "".join(f"{NEWLINE}    {sym} -> {path}" for sym, path in unopened)
+            named = (f"{NEWLINE}  El objetivo nombra esto, EXISTE en este "
+                     f"repositorio, y no has abierto el fichero:{rows}"
+                     f"{NEWLINE}  Si tu conclusion es que el problema no esta "
+                     f"aqui, esa conclusion todavia no cubre estos sitios.")
         raise ToolError(
             ERROR_NOTHING_CHANGED,
             "antes de aceptar 'no hace falta ningun cambio': NO has creado ni "
             "modificado NINGUN fichero en todo el run." + expected
+            + named
             + _navigation_note(ctx)
             + "\n  Si crees que ya escribiste algo, no llego a disco: compruebalo "
             "con read_file o list_dir y escribelo ahora si falta.\n"

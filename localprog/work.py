@@ -526,6 +526,9 @@ def run_ticket(
             write_scope=ticket.write_scope,
             allowed_new_files=ticket.allowed_new_files,
             acceptance_tests=ticket.acceptance_tests,
+            # F-173. So a refusal can quote the objective back with a fact
+            # attached, instead of restating a permission.
+            objective=ticket.objective,
             # The harness's own top-ranked candidate, computed once, so a
             # refusal can name the exact call instead of a kind of call. The
             # ablation measured what naming the copy is worth: without the
