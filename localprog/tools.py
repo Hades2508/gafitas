@@ -3291,7 +3291,7 @@ PARAM_DOC: dict[str, str] = {
     "start": "Primera linea, empezando en 1. En read_file, null lee desde el principio.",
     "end": "Ultima linea, incluida. En read_file, null lee hasta el final.",
     "pattern": "Expresion regular de Python. Se busca linea a linea.",
-    "query": "Que buscas, en palabras. PEGA EL TEXTO DEL OBJETIVO TAL CUAL, sin resumirlo: cuantas mas palabras le des, mejor ordena. Resumir la descripcion en cuatro palabras empeora el resultado.",
+    "query": "Que buscas, DESCRITO en unas 15-30 palabras: que hace el codigo, con que trabaja y como se comporta. Cuatro o cinco palabras sueltas se quedan cortas y ordenan mucho peor. Volcar un informe de error entero tampoco ayuda: la traza y los pasos de reproduccion diluyen las pocas palabras que distinguen. Si partes de un issue, describe el problema con tus palabras o quedate con su titulo, no con todo el texto.",
     "limit": "Cuantos candidatos devolver (1-50). Por defecto 15.",
     "exclude_tests": "Booleano; si es True, deja fuera los ficheros de test. Util cuando buscas el codigo que falla y no el test que lo comprueba: un test suele parecerse MAS a la descripcion del problema que el codigo en si, asi que copa los primeros puestos. Por defecto False.",
     "glob": "Que ficheros mirar, p.ej. '**/*.py' (por defecto) o 'tests/**/*.py'.",
