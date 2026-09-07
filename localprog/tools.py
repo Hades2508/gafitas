@@ -1501,6 +1501,20 @@ def edit(ctx: ToolContext, path: Any, old: Any, new: Any) -> str:
         )
 
     candidate = text.replace(old, new, 1)
+    # F-166. `old` identical to `new` replaces the text with itself: the file
+    # is untouched, the turn is spent, and before this the call was reported as
+    # a SUCCESS and the path added to changed_files -- so the record claimed a
+    # modification the tree did not have. Seen in sealed evidence,
+    # psf__requests-2931 turn 9: 203 characters, byte-identical on both sides,
+    # accepted. `replace_symbol_body` and `replace_file` already refuse this;
+    # `edit` and `replace_lines` did not, and there is no reason for the six
+    # write tools to disagree about it.
+    if candidate == text:
+        raise ToolError(
+            ERROR_NOTHING_CHANGED,
+            f"old y new son identicos, asi que esta edicion no cambiaria nada "
+            f"en {rel!r}. Si querias modificar algo, new tiene que diferir de "
+            f"old; si el fichero ya esta como quieres, no hace falta editarlo.")
     if rel.endswith(".py"):
         try:
             ast.parse(candidate)
@@ -1569,6 +1583,18 @@ def replace_lines(ctx: ToolContext, path: Any, start: Any, end: Any, content: An
 
     body = content if content.endswith("\n") or not content else content + "\n"
     candidate = "".join(lines[: start - 1]) + body + "".join(lines[stop:])
+    # F-166, the same gap `edit` had: replacing a range with what it already
+    # contains leaves the file untouched, and the call used to report success
+    # and add the path to changed_files -- so the record claimed a modification
+    # the tree did not have. `replace_file` and `replace_symbol_body` already
+    # refused it, and there is no reason for the six write tools to disagree
+    # about what "nothing changed" means.
+    if candidate == text:
+        raise ToolError(
+            ERROR_NOTHING_CHANGED,
+            f"esas lineas de {rel!r} ya son exactamente ese contenido, asi que "
+            f"la sustitucion no cambiaria nada. Comprueba el rango, o si el "
+            f"fichero ya esta como quieres no hace falta tocarlo.")
 
     if rel.endswith(".py"):
         try:
