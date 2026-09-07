@@ -693,12 +693,21 @@ def measure_payload_limit(provider, *, protocol_name: str = "A",
             survived += 1 if ok else 0
             reason = why or reason
             repaired = rep or repaired
-            tokens = tok or tokens
+            # F-178b. This was `tokens = tok or tokens`, which keeps the LAST
+            # non-zero sample and publishes it as `generated_tokens` -- a name
+            # that reads as a total. Three samples of 100, 200 and 300 reported
+            # 300. Cost is one of the few things this ladder is for.
+            tokens += tok or 0
+        # A strict majority, as the docstring above says. `rate >= 0.5` passed
+        # a TIE: with samples=4, two survivors and two losses counted as
+        # survived. With the default of 3 the two agree, which is why it went
+        # unnoticed.
         rate = survived / max(1, samples)
-        rungs.append({"size": size, "survived": rate >= 0.5, "rate": round(rate, 2),
+        majority = survived * 2 > max(1, samples)
+        rungs.append({"size": size, "survived": majority, "rate": round(rate, 2),
                       "samples": samples, "reason": reason, "repaired": repaired,
                       "generated_tokens": tokens})
-        if rate >= 0.5:
+        if majority:
             limit = size
 
     ok_sizes = [r["size"] for r in rungs if r["survived"]]

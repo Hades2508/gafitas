@@ -44,7 +44,16 @@ from pathlib import Path
 #: Arguments that carry the edit's PAYLOAD rather than its address. Normalised
 #: separately because whitespace at the very end of a payload is not a different
 #: edit, while whitespace inside one is.
-_PAYLOAD_KEYS = ("content", "new", "old", "argv")
+#: What the attempt WRITES. A trailing newline here is cosmetic, so it is
+#: stripped before hashing and a body resent with one is the same body.
+_WRITTEN_KEYS = ("content", "new", "argv")
+
+#: F-178. `old` is deliberately NOT in that list. It is a pattern, matched
+#: byte for byte by `edit`, so "hello " and "hello" are different patterns and
+#: only one of them can match. Stripping it made a failed attempt and its own
+#: correction hash identically, and the agent that fixed its mistake was told
+#: it had already tried that.
+_PAYLOAD_KEYS = _WRITTEN_KEYS + ("old",)
 
 
 def _normalise(value) -> str:
@@ -62,16 +71,28 @@ def _normalise(value) -> str:
 def attempt_signature(tool: str, args: dict) -> str:
     """A stable identity for one edit attempt, address and payload together.
 
-    Trailing whitespace on a payload is stripped before hashing: resending the
-    same body with a newline added is the same body. Nothing else is normalised,
-    because a change anywhere inside the payload is a different attempt and must
-    be allowed through.
+    Trailing whitespace is stripped from a payload that is WRITTEN -- resending
+    the same body with a newline added is the same body.
+
+    F-178: it used to be stripped from ``old`` as well, and ``old`` is not a
+    payload. It is a pattern, matched byte for byte by ``edit``, so "hello " and
+    "hello" are different patterns and exactly one of them can succeed.
+
+    The cost of that was the worst behaviour a memory like this can have. An
+    agent tried old="hello " against a file containing "hello", was correctly
+    told the text was not found, CORRECTED IT to old="hello" -- and was refused
+    with ERROR_REPEATED_REJECTED_EDIT, because after stripping the two attempts
+    hashed the same. It had done precisely what the error asked of it and was
+    told it had already tried that. The file could not be edited again for the
+    rest of the run.
+
+    A memory that punishes correction is worse than no memory.
     """
     parts = [str(tool)]
     for key in sorted(args or {}):
         value = args[key]
         text = _normalise(value)
-        if key in _PAYLOAD_KEYS and isinstance(value, str):
+        if key in _WRITTEN_KEYS and isinstance(value, str):
             text = text.rstrip()
         parts.append(f"{key}={text}")
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()[:32]
