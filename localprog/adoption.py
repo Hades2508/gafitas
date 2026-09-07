@@ -168,19 +168,58 @@ def concrete_offer(primitive: str, rel: str, symbols: list | None = None) -> str
     return ""
 
 
+#: The chain, in order. Each stage requires the one before it: a primitive
+#: cannot be accepted without having been called, called without having been
+#: selected, selected without having been offered. `applicable` does not
+#: require `offered` -- offering is the treatment, and the control arm records
+#: applicability while deliberately staying silent.
+_ORDER = (("selected", "offered"), ("called", "selected"), ("accepted", "called"))
+
+
+def _out_of_order(o: Opportunity) -> list[str]:
+    """Which stage claims to have happened without the one it depends on."""
+    broken = []
+    for later, earlier in _ORDER:
+        if getattr(o, later, False) and not getattr(o, earlier, False):
+            broken.append(f"{later} without {earlier}")
+    if o.offered and not o.available:
+        broken.append("offered without available")
+    return broken
+
+
 @dataclass
 class AdoptionLedger:
     """Every opportunity, in order. Sealed with the run."""
 
     opportunities: list = field(default_factory=list)
     enabled: bool = True
+    #: F-177. Rows whose stages contradict each other, kept rather than
+    #: rejected. The chain in this module's header is ordered -- a call cannot
+    #: be accepted without being called, nor selected without being offered --
+    #: and nothing checked it, so a recording bug anywhere upstream would have
+    #: produced counts that looked ordinary and were impossible.
+    #:
+    #: NOT an exception. A measurement instrument that kills the run it is
+    #: measuring destroys the evidence of its own defect, which is the failure
+    #: this project takes most seriously. It is recorded, sealed, and loud in
+    #: the data instead.
+    violations: list = field(default_factory=list)
 
     def record(self, opportunity: Opportunity) -> None:
-        if self.enabled:
-            self.opportunities.append(opportunity)
+        if not self.enabled:
+            return
+        broken = _out_of_order(opportunity)
+        if broken:
+            self.violations.append({"turn": opportunity.turn,
+                                    "primitive": opportunity.primitive,
+                                    "broken": broken})
+        self.opportunities.append(opportunity)
 
     def to_dict(self) -> dict:
         rows = [o.to_dict() for o in self.opportunities]
+        # Sealed alongside the counts, so anything reading them can see whether
+        # they were built out of rows that make sense.
+        violations = list(self.violations)
         by_primitive: dict = {}
         for row in rows:
             slot = by_primitive.setdefault(row["primitive"], {
@@ -192,7 +231,12 @@ class AdoptionLedger:
             slot["concrete"] += bool(row["concrete_call_offered"])
             slot["called"] += bool(row["called"])
             slot["accepted"] += bool(row["accepted"])
-        return {"events": rows, "by_primitive": by_primitive}
+        return {"events": rows, "by_primitive": by_primitive,
+                # Empty is the answer that should always come back. A non-empty
+                # list means a count above was built from rows that cannot have
+                # happened, and no conclusion should be drawn from it until the
+                # recording bug is found.
+                "violations": violations}
 
 
 def observe(ledger: AdoptionLedger, *, turn: int, tool: str, root: Path,

@@ -3090,20 +3090,37 @@ def _offer_a_primitive(ctx: Any, name: str, raw_args: Any, code: str) -> str:
     except Exception:                                        # noqa: BLE001
         args = {}
 
+    # F-177. The offer is DECIDED first and the ledger records what was
+    # decided. It used to be written before any of the four returns below --
+    # already using the primitive, no resolvable target, a forbidden path, or
+    # neither primitive applicable -- so every silent case still claimed the
+    # model had been shown two calls it never saw. F-148, added the same night,
+    # is one of those four paths: making the harness correctly quiet about
+    # forbidden paths widened the error.
+    #
+    # The ledger's own header says why this is not bookkeeping pedantry:
+    # OFFERED means "named at a point the model was reading", and an offer
+    # recorded but never made collapses it into APPLICABLE -- the exact
+    # distinction the chain exists to keep apart.
+    text, offers = _decide_offer(ctx, name, rel)
     if name in WRITE_TOOLS and ledger is not None:
         adoption.observe(ledger, turn=getattr(ctx, "turn", 0), tool=name,
                          root=ctx.root, rel=rel, opened=ctx.opened,
-                         accepted=False,
-                         offers=({"replace_file": {"offered": True, "concrete": True},
-                                  "replace_symbol_body": {"offered": True,
-                                                          "concrete": True}}
-                                 if getattr(ctx, "concrete_offers", False) else None))
+                         accepted=False, offers=offers or None)
+    return text
 
+
+def _decide_offer(ctx: Any, name: str, rel: str | None) -> tuple[str, dict]:
+    """(what the model will be shown, what was actually offered, per primitive).
+
+    Split out so the ledger can be told the truth: the caller records exactly
+    these `offers` and nothing else.
+    """
     if not getattr(ctx, "concrete_offers", False) or name not in WRITE_TOOLS:
-        return ""
+        return "", {}
     if name in ("replace_file", "replace_symbol_body"):
         # Already using the primitive; pointing at it would be noise.
-        return ""
+        return "", {}
 
     # F-148. Never offer a primitive for a path the mission does not authorise.
     #
@@ -3126,23 +3143,26 @@ def _offer_a_primitive(ctx: Any, name: str, raw_args: Any, code: str) -> str:
     # copy of THIS rule would drift towards being more permissive than the real
     # boundary.
     if not rel:
-        return ""
+        return "", {}
     try:
         _check_writable(ctx, rel, creating=False)
     except ToolError:
-        return ""
+        return "", {}
 
     lines = []
+    offers: dict = {}
     can_file, _why = adoption.file_is_replaceable(ctx.root, rel, opened=ctx.opened)
     can_symbol, _why2, symbols = adoption.symbol_is_replaceable(ctx.root, rel)
     if can_symbol:
         lines.append("  " + adoption.concrete_offer("replace_symbol_body", rel, symbols))
+        offers["replace_symbol_body"] = {"offered": True, "concrete": True}
     if can_file:
         lines.append("  " + adoption.concrete_offer("replace_file", rel))
+        offers["replace_file"] = {"offered": True, "concrete": True}
     if not lines:
-        return ""
+        return "", {}
     return (NEWLINE + "  Otras formas de expresar este cambio, con lo que ya se "
-            "sabe de este fichero:" + NEWLINE + NEWLINE.join(lines))
+            "sabe de este fichero:" + NEWLINE + NEWLINE.join(lines), offers)
 
 
 def normalise_arguments(raw: Any) -> dict:
