@@ -553,7 +553,23 @@ def signal_no_collateral_regression(
         node for node, status in before.outcomes.items()
         if status == "passed" and node not in after.outcomes and outside_acceptance(node)
     )
-    data = {"broke": broke, "disappeared": vanished,
+    # F-169. A test that was green and is now xfail, xpass or skipped is still
+    # collected, so `vanished` misses it, and it does not fail, so `broke`
+    # misses it too -- and marking a broken test @pytest.mark.xfail is the
+    # commonest way there is to silence one. This signal exists to catch
+    # exactly that kind of cheat and was blind to its cleanest form.
+    #
+    # Reproduced before fixing: two passing tests, one of them then marked
+    # xfail with its body changed to `assert False`. The verdict came back PASS
+    # with the sentence "the 2 tests that passed before still pass", while the
+    # very same object carried pre_passed=2, post_passed=1.
+    silenced = sorted(
+        node for node, status in before.outcomes.items()
+        if status == "passed"
+        and after.outcomes.get(node) in ("xfail", "xpass", "skipped")
+        and outside_acceptance(node)
+    )
+    data = {"broke": broke, "disappeared": vanished, "silenced": silenced,
             "pre_passed": sum(1 for s in before.outcomes.values() if s == "passed"),
             "post_passed": sum(1 for s in after.outcomes.values() if s == "passed")}
     if broke:
@@ -561,6 +577,15 @@ def signal_no_collateral_regression(
             "no_collateral_regression", REGRESSION,
             f"{len(broke)} tests que pasaban antes ahora fallan: {', '.join(broke[:6])}"
             + (" ..." if len(broke) > 6 else ""),
+            data | {"classification": UNEXPLAINED_CHANGE},
+        )
+    if silenced:
+        return Signal(
+            "no_collateral_regression", REGRESSION,
+            f"{len(silenced)} tests que pasaban antes ahora estan silenciados "
+            f"(xfail/skip): {', '.join(silenced[:6])}"
+            + (" ..." if len(silenced) > 6 else "")
+            + ". Marcar un test que se ha roto no es arreglarlo.",
             data | {"classification": UNEXPLAINED_CHANGE},
         )
     if vanished:
@@ -581,6 +606,20 @@ def signal_no_collateral_regression(
             f"llegaba a importarse), asi que no habia nada que romper. "
             f"Ahora pasan {data['post_passed']}. Comprobacion vacia, no fuerte.",
             data | {"classification": EXPECTED_CHANGE, "empty_baseline": True},
+        )
+    if data["post_passed"] < data["pre_passed"]:
+        # F-169, the guard for the next gap of this shape. Every specific check
+        # above passed and yet fewer tests are green than were green before, so
+        # something changed that none of them names. Claiming preservation here
+        # would be the signal contradicting its own data in the same object,
+        # which is what it did for xfail before that case was named.
+        return Signal(
+            "no_collateral_regression", INCONCLUSIVE,
+            f"pasaban {data['pre_passed']} tests y ahora pasan "
+            f"{data['post_passed']}, y ninguno aparece como roto, desaparecido "
+            f"ni silenciado. No se puede afirmar que el comportamiento se haya "
+            f"conservado sin saber que le paso a la diferencia.",
+            data | {"classification": UNEXPLAINED_CHANGE},
         )
     return Signal(
         "no_collateral_regression", PASS,

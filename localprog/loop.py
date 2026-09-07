@@ -688,6 +688,22 @@ def run_loop(
                     result.outcome = FINISHED
                     break
                 last_call_was_finish = False
+                # F-169b. The error streak used to survive across successful
+                # calls, because it was only ever touched in the error branch.
+                # So six failed edits separated by successful reads -- an agent
+                # trying something, learning, and trying again -- accumulated to
+                # the stall threshold exactly like an agent repeating one call
+                # forever. STALLED means "asking again produces the same fact",
+                # by its own comment; a call that worked in between is new
+                # information and the streak is no longer that.
+                #
+                # Latent rather than observed: across the sealed evidence the
+                # longest such streak is 2 against a threshold of 6, and no run
+                # has been STALLED. Fixed because the counter did not mean what
+                # it was documented to mean, and a false stall kills a run that
+                # was getting somewhere.
+                error_repeat = 0
+                last_tool_error = None
                 continue
 
             # Not ok: exactly one of the two counters moves.
